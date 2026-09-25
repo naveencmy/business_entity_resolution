@@ -113,9 +113,16 @@ class EntityMatcher:
     def fit(self, X: np.ndarray, y: np.ndarray):
         """Fit the matching classifier."""
         self.clf.fit(X, y)
+        if self.model_type == "xgb":
+            try:
+                self.clf.set_params(device="cpu")
+            except Exception:
+                pass
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """Return match probability for each pair."""
+        if len(X) == 0:
+            return np.array([], dtype=np.float32)
         return self.clf.predict_proba(X)[:, 1]
 
     def optimize_threshold(

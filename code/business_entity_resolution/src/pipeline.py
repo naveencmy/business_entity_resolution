@@ -284,8 +284,8 @@ def run_test_inference(matcher: Optional[EntityMatcher] = None):
             cand_ids = [cr["entity_id"] for cr in cand_recs]
             matched_ids = matcher.predict_entity_matches(
                 cand_ids, probs,
-                anchor_threshold=max(0.72, matcher.optimal_threshold),
-                expansion_threshold=max(0.60, matcher.optimal_threshold - 0.08)
+                anchor_threshold=matcher.optimal_threshold,
+                expansion_threshold=max(0.40, matcher.optimal_threshold - 0.08)
             )
 
             if matched_ids:

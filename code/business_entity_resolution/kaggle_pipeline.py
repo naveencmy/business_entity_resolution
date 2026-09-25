@@ -476,16 +476,23 @@ class EntityMatcher:
             random_state=42,
             n_jobs=-1
         )
-        self.optimal_threshold: float = 0.65
+        self.optimal_threshold: float = 0.54
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         self.clf.fit(X, y)
+        # Switch to CPU for rapid inplace prediction without PCIe copy overhead on small batches
+        try:
+            self.clf.set_params(device="cpu")
+        except Exception:
+            pass
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if len(X) == 0:
+            return np.array([], dtype=np.float32)
         return self.clf.predict_proba(X)[:, 1]
 
     def optimize_threshold(self, candidate_pairs: List[Tuple[str, str]], probs: np.ndarray, gt: Dict[str, Set[str]]):
-        best_t, best_score = 0.65, -1.0
+        best_t, best_score = 0.54, -1.0
         for tau in np.arange(0.40, 0.95, 0.02):
             preds = {s1: set() for s1 in gt.keys()}
             for (s1_id, cid), p in zip(candidate_pairs, probs):
@@ -501,8 +508,8 @@ class EntityMatcher:
         self,
         candidate_ids: List[str],
         probabilities: np.ndarray,
-        anchor_threshold: float = 0.72,
-        expansion_threshold: float = 0.65
+        anchor_threshold: float = 0.54,
+        expansion_threshold: float = 0.46
     ) -> List[str]:
         if len(candidate_ids) == 0 or len(probabilities) == 0:
             return []
@@ -653,16 +660,20 @@ def run():
             if not cand_recs:
                 results_matches[s1_id] = ""
                 continue
+            feats_matrix = np.array([
+                extract_pairwise_features(s1_rec, cr) for cr in cand_recs
+            ], dtype=np.float32)
+            probs = matcher.predict_proba(feats_matrix)
             cand_ids = [cr["entity_id"] for cr in cand_recs]
             m_ids = matcher.predict_entity_matches(
-                cand_ids, p,
-                anchor_threshold=max(0.72, matcher.optimal_threshold),
-                expansion_threshold=max(0.60, matcher.optimal_threshold - 0.08)
+                cand_ids, probs,
+                anchor_threshold=matcher.optimal_threshold,
+                expansion_threshold=max(0.40, matcher.optimal_threshold - 0.08)
             )
             results_matches[s1_id] = ",".join(m_ids) if m_ids else ""
 
-            if (i + 1) % 100000 == 0 or (i + 1) == len(s1_list):
-                print(f"  [{country}] {i + 1}/{len(s1_list)} complete.")
+            if (i + 1) % 50000 == 0 or (i + 1) == len(s1_list):
+                print(f"  [{country}] {i + 1}/{len(s1_list)} complete ({((i + 1)/len(s1_list))*100:.1f}%).")
         del idx
 
     # Step C: Write outputs
