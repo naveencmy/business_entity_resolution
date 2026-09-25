@@ -281,11 +281,12 @@ def run_test_inference(matcher: Optional[EntityMatcher] = None):
             ], dtype=np.float32)
 
             probs = matcher.predict_proba(feats_matrix)
-            matched_ids = [
-                cand_recs[j]["entity_id"]
-                for j, p in enumerate(probs)
-                if p >= matcher.optimal_threshold
-            ]
+            cand_ids = [cr["entity_id"] for cr in cand_recs]
+            matched_ids = matcher.predict_entity_matches(
+                cand_ids, probs,
+                anchor_threshold=max(0.72, matcher.optimal_threshold),
+                expansion_threshold=max(0.60, matcher.optimal_threshold - 0.08)
+            )
 
             if matched_ids:
                 results_matches[s1_id] = ",".join(matched_ids)

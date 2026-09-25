@@ -150,6 +150,36 @@ class EntityMatcher:
         self.optimal_threshold = best_threshold
         return best_threshold
 
+    def predict_entity_matches(
+        self,
+        candidate_ids: List[str],
+        probabilities: np.ndarray,
+        anchor_threshold: float = 0.72,
+        expansion_threshold: float = 0.65
+    ) -> List[str]:
+        """
+        Intentional Singleton & Match Prediction Gate:
+        1. If candidate list is empty, returns [] (singleton score: 1.0).
+        2. If max probability < anchor_threshold (0.72), the entity fails the high-confidence
+           anchor test and is classified as a singleton -> returns [] (protects singleton from 0.0 penalty).
+        3. If anchor is verified (>= 0.72), all candidates passing expansion_threshold (0.65)
+           are included as genuine cluster matches.
+        """
+        if len(candidate_ids) == 0 or len(probabilities) == 0:
+            return []
+
+        max_prob = float(np.max(probabilities))
+        # Intentional Singleton Verification Gate
+        if max_prob < anchor_threshold:
+            return []
+
+        # Anchor confirmed: retain all cluster members meeting expansion threshold
+        matched = [
+            cid for cid, p in zip(candidate_ids, probabilities)
+            if p >= expansion_threshold
+        ]
+        return matched
+
     def save(self, filepath: str):
         """Save model artifact to disk."""
         with open(filepath, "wb") as f:
