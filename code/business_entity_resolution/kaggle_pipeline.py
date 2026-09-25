@@ -268,8 +268,9 @@ class CountryCandidateIndex:
 
     def add_target(self, rec: Dict[str, Any]):
         tid = rec["entity_id"]
-        self.targets[tid] = rec
         stem = rec.get("name_stem", "").strip().lower()
+        rec["num_grams"] = max(1, len(stem) - 2) if stem else 1
+        self.targets[tid] = rec
         if stem:
             self.stem_index[stem].append(tid)
             words = stem.split()
@@ -291,7 +292,7 @@ class CountryCandidateIndex:
     def finalize_index(self):
         total = len(self.targets)
         if total == 0: return
-        max_df = max(500, int(total * 0.05))
+        max_df = min(2000, max(300, int(total * 0.005)))
         pruned_grams = [g for g, count in self.gram_df.items() if count > max_df]
         for g in pruned_grams:
             del self.gram_index[g]
@@ -324,13 +325,17 @@ class CountryCandidateIndex:
             if num_s1_grams > 0:
                 gram_hits: Dict[str, int] = collections.defaultdict(int)
                 for g in s1_grams:
-                    for tid in self.gram_index.get(g, []):
-                        gram_hits[tid] += 1
+                    postings = self.gram_index.get(g)
+                    if postings:
+                        for tid in postings:
+                            gram_hits[tid] += 1
+                min_hits = max(2, int(num_s1_grams * 0.25)) if num_s1_grams > 3 else 1
                 for tid, hits in gram_hits.items():
+                    if hits < min_hits:
+                        continue
                     target_rec = self.targets.get(tid)
                     if target_rec:
-                        t_stem = target_rec.get("name_stem", "")
-                        t_grams_count = max(1, len(t_stem) - 2)
+                        t_grams_count = target_rec.get("num_grams", 1)
                         overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
                         if overlap >= 0.28:
                             scores[tid] += overlap * 7.0
