@@ -1,0 +1,76 @@
+================================================================================
+BUSINESS ENTITY RESOLUTION CHALLENGE 2026 - COMPREHENSIVE PROBLEM SPECIFICATION
+================================================================================
+
+1. PRIMARY OBJECTIVE & TARGET
+--------------------------------------------------------------------------------
+- Objective: Match noisy business records from Source 2 (S2) and Source 3 (S3) to a deduplicated reference Source 1 (S1).
+- Target Performance: Top 1% solution with Macro F_0.5 score of 0.998 - 0.9998.
+- Evaluation Metric: Macro-averaged F_0.5 over all Source 1 entities in the test set.
+
+2. METRIC FORMULATION & MATHEMATICAL IMPLICATIONS
+--------------------------------------------------------------------------------
+- Formula:
+    F_0.5 = (1.25 * Precision * Recall) / (0.25 * Precision + Recall)
+- Precision Weighting: Precision is weighted 2x as heavily as Recall. False merges (linking two different entities) are penalized severely compared to missed matches.
+- Singletons: Entities in Source 1 with zero true matches in S2/S3.
+    * If correctly predicted empty: Score = 1.0.
+    * If incorrectly predicted with any match: Score = 0.0.
+    * Consequence: False positives on singletons cause immediate 0.0 scores, degrading the macro average drastically. The model must have extremely strict calibration for claiming a match.
+
+3. DATASET SCALE & FILE STRUCTURE
+--------------------------------------------------------------------------------
+Data Path: Deputy_pipe/Datasets/student_resource/dataset/
+
+Training Data:
+- train_source1.tsv: ~2.21M records (~210 MB) [Reference Entities]
+- train_source2.tsv: ~5.03M records (~489 MB)
+- train_source3.tsv: ~5.04M records (~504 MB)
+- train_ground_truth.tsv: ~2.21M rows (~127 MB) [Labels: source1_entity_id -> matched_entity_ids]
+
+Test Data:
+- test_source1.tsv: ~1.73M records (~175 MB) [Inference Reference Entities]
+- test_source2.tsv: ~4.89M records (~509 MB)
+- test_source3.tsv: ~4.89M records (~506 MB)
+
+Columns in all Source files:
+- entity_id: String (e.g. S1-..., S2-..., S3-...)
+- business_name: String (inconsistent naming, typos, legal forms, transliterations, URLs)
+- business_address: String (varied formats, landmarks, missing state/zip/pin)
+- country: String (Open-set: US and India in train; US, India, and France in test)
+
+4. NOISE PATTERNS & CHALLENGES
+--------------------------------------------------------------------------------
+- Multilingual scripts: Devanagari (Hindi/Marathi), Tamil, Gujarati, etc. in India sources vs Latin English in S1. Transliteration pipeline required.
+- Corporate entity suffixes: Inc, LLC, Corp, Pvt Ltd, Ltd, LLP, SARL, SASU, SCI, etc. Token repetition noise ("LLC LLC", "Vidyalaya Vidyalaya").
+- Domain/Web noise: Embedded URLs in names ("heassociates.com", "COMPANY | www.xyz.com").
+- Landmark addresses: "Opposite SBI ATM", "Near Fortis Hospital", etc.
+- Open-set country: France appears in test data. Hardcoded filters or encoders strictly prohibited. Country partitioning ensures clean search boundaries.
+
+5. OUTPUT REQUIREMENTS & STRICT COMPLIANCE
+--------------------------------------------------------------------------------
+Output Files:
+- output/matching_results.tsv (scored on leaderboard)
+- output/candidate_pairs.tsv (blocking candidates fed to model)
+
+Rules:
+1. Strict tab separation (sep="\t"). No commas as separators.
+2. Every Source 1 entity from the test set must have exactly one row.
+3. Empty 2nd column for entities with no matches/candidates.
+4. Second column must be comma-separated list of IDs with NO quoting and NO duplicates.
+5. S2 and S3 IDs only, and only IDs that exist in the test set.
+6. Final matches must be a subset of candidate pairs.
+7. Validation script: python3 utils/validate_submission.py must pass with exit code 0.
+
+6. FINAL PACKAGE DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+<team_name>_submission.zip
+├── output/
+│   ├── matching_results.tsv
+│   └── candidate_pairs.tsv
+├── code/
+│   └── business_entity_resolution/
+│       ├── src/
+│       ├── README.md
+│       └── requirements.txt
+└── Documentation_template.md
