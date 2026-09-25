@@ -35,30 +35,50 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 # 1. PATH RESOLUTION (Auto-detects Kaggle, Local, or Custom Environment)
 # -----------------------------------------------------------------------------
 def locate_dataset_dir() -> Path:
+    # 1. Explicit Kaggle dataset matching user's exact hierarchy (/kaggle/input/test_data/dataset)
+    known_kaggle = [
+        Path("/kaggle/input/test_data/dataset"),
+        Path("/kaggle/input/test-data/dataset"),
+        Path("/kaggle/input/test_data"),
+        Path("/kaggle/input/dataset"),
+    ]
+    for p in known_kaggle:
+        if (p / "test" / "test_source1.tsv").exists() or (p / "test_source1.tsv").exists():
+            print(f"[Dataset Detector] Found dataset at: {p}")
+            return p
+
+    # 2. General Kaggle recursive search
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for root, dirs, files in os.walk(kaggle_input):
+            p_root = Path(root)
+            if (p_root / "test" / "test_source1.tsv").exists():
+                print(f"[Dataset Detector] Found dataset root at: {p_root}")
+                return p_root
+            if "test_source1.tsv" in files:
+                parent = p_root.parent
+                print(f"[Dataset Detector] Found dataset parent at: {parent}")
+                return parent
+
+    # 3. Local candidates
     candidates = [
-        Path("/kaggle/input"),
         Path("./dataset"),
         Path("../dataset"),
         Path("e:/Projects/Active/Business_pipeline/Deputy_pipe/Datasets/student_resource/dataset"),
         Path("./Deputy_pipe/Datasets/student_resource/dataset"),
     ]
-    # Check candidates
     for p in candidates:
-        if p.exists():
-            # If /kaggle/input, search recursively for test_source1.tsv
-            if p == Path("/kaggle/input"):
-                for root, dirs, files in os.walk(p):
-                    if "test_source1.tsv" in files and "train_source1.tsv" in files:
-                        print(f"[Dataset Detector] Found dataset at: {root}")
-                        return Path(root)
-            elif (p / "test" / "test_source1.tsv").exists() or (p / "test_source1.tsv").exists():
-                print(f"[Dataset Detector] Found dataset at: {p}")
-                return p
-    # Fallback to local default
+        if (p / "test" / "test_source1.tsv").exists() or (p / "test_source1.tsv").exists():
+            print(f"[Dataset Detector] Found dataset at: {p}")
+            return p
+
     return Path("e:/Projects/Active/Business_pipeline/Deputy_pipe/Datasets/student_resource/dataset")
 
 DATASET_DIR = locate_dataset_dir()
-OUTPUT_DIR = Path("./output")
+if Path("/kaggle/working").exists():
+    OUTPUT_DIR = Path("/kaggle/working/output")
+else:
+    OUTPUT_DIR = Path("./output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Detect train and test directories
@@ -237,7 +257,7 @@ def extract_address_keys(clean_addr: str, postal_code: str, locality: str) -> Li
     return keys
 
 class CountryCandidateIndex:
-    def __init__(self, country: str, max_candidates: int = 15):
+    def __init__(self, country: str, max_candidates: int = 8):
         self.country = country
         self.max_candidates = max_candidates
         self.targets: Dict[str, Dict[str, Any]] = {}
@@ -279,17 +299,17 @@ class CountryCandidateIndex:
         for k in pruned_addr:
             del self.addr_key_index[k]
 
-    def query_candidates(self, s1_rec: Dict[str, Any]) -> List[str]:
+    def query_candidates(self, s1_rec: Dict[str, Any], min_score: float = 3.0) -> List[str]:
         scores: Dict[str, float] = collections.defaultdict(float)
         s1_stem = s1_rec.get("name_stem", "").strip().lower()
         if s1_stem:
             for tid in self.stem_index.get(s1_stem, []):
-                scores[tid] += 10.0
+                scores[tid] += 12.0
             words = s1_stem.split()
             if len(words) >= 2:
                 prefix_key = " ".join(words[:2])
                 for tid in self.stem_index.get(prefix_key, []):
-                    scores[tid] += 5.0
+                    scores[tid] += 6.0
         s1_addr_keys = extract_address_keys(
             s1_rec.get("clean_addr", ""),
             s1_rec.get("postal_code", ""),
@@ -312,10 +332,12 @@ class CountryCandidateIndex:
                         t_stem = target_rec.get("name_stem", "")
                         t_grams_count = max(1, len(t_stem) - 2)
                         overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
-                        if overlap >= 0.25:
-                            scores[tid] += overlap * 6.0
+                        if overlap >= 0.28:
+                            scores[tid] += overlap * 7.0
         if not scores: return []
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        filtered = [(tid, sc) for tid, sc in scores.items() if sc >= min_score]
+        if not filtered: return []
+        ranked = sorted(filtered, key=lambda x: x[1], reverse=True)
         return [tid for tid, _ in ranked[:self.max_candidates]]
 
 # -----------------------------------------------------------------------------
@@ -475,6 +497,24 @@ class EntityMatcher:
         print(f"Optimal Threshold: {best_t:.2f} (Macro F_0.5: {best_score:.4f})")
         self.optimal_threshold = best_t
 
+    def predict_entity_matches(
+        self,
+        candidate_ids: List[str],
+        probabilities: np.ndarray,
+        anchor_threshold: float = 0.72,
+        expansion_threshold: float = 0.65
+    ) -> List[str]:
+        if len(candidate_ids) == 0 or len(probabilities) == 0:
+            return []
+        max_prob = float(np.max(probabilities))
+        # Intentional Singleton Verification Gate: protect singletons from 0.0 collapse
+        if max_prob < anchor_threshold:
+            return []
+        return [
+            cid for cid, p in zip(candidate_ids, probabilities)
+            if p >= expansion_threshold
+        ]
+
 # -----------------------------------------------------------------------------
 # 6. END-TO-END PIPELINE EXECUTION
 # -----------------------------------------------------------------------------
@@ -613,9 +653,12 @@ def run():
             if not cand_recs:
                 results_matches[s1_id] = ""
                 continue
-            feats = np.array([extract_pairwise_features(s1_rec, cr) for cr in cand_recs], dtype=np.float32)
-            p = matcher.predict_proba(feats)
-            m_ids = [cand_recs[j]["entity_id"] for j, prob in enumerate(p) if prob >= matcher.optimal_threshold]
+            cand_ids = [cr["entity_id"] for cr in cand_recs]
+            m_ids = matcher.predict_entity_matches(
+                cand_ids, p,
+                anchor_threshold=max(0.72, matcher.optimal_threshold),
+                expansion_threshold=max(0.60, matcher.optimal_threshold - 0.08)
+            )
             results_matches[s1_id] = ",".join(m_ids) if m_ids else ""
 
             if (i + 1) % 100000 == 0 or (i + 1) == len(s1_list):
