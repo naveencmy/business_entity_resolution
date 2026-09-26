@@ -32,26 +32,28 @@ def extract_address_keys(clean_addr: str, postal_code: str, locality: str) -> Li
     numbers = [tok for tok in tokens if any(c.isdigit() for c in tok)]
     words = [tok for tok in tokens if not any(c.isdigit() for c in tok)]
     
-    num_key = numbers[0] if numbers else ""
     first_word = words[0] if words else ""
     second_word = words[1] if len(words) > 1 else ""
     
     if postal_code:
         keys.append(f"P#{postal_code}")
-        if num_key:
-            keys.append(f"P#{postal_code}#{num_key}")
+        for num in numbers[:2]:
+            keys.append(f"P#{postal_code}#{num}")
         if first_word:
             keys.append(f"P#{postal_code}#{first_word}")
             
-    if locality and num_key:
-        keys.append(f"L#{locality}#{num_key}")
+    if locality:
+        for num in numbers[:2]:
+            keys.append(f"L#{locality}#{num}")
+        if first_word:
+            keys.append(f"L#{locality}#{first_word}")
         
-    # Crucial for addresses without postal codes:
-    if num_key and first_word:
-        keys.append(f"N#{num_key}#{first_word}")
-        if second_word:
-            keys.append(f"N#{num_key}#{first_word}#{second_word}")
-    elif len(words) >= 2:
+    for num in numbers[:2]:
+        if first_word:
+            keys.append(f"N#{num}#{first_word}")
+            if second_word:
+                keys.append(f"N#{num}#{first_word}#{second_word}")
+    if len(words) >= 2:
         keys.append(f"W#{first_word}#{second_word}")
         
     return keys
@@ -82,7 +84,8 @@ class CountryCandidateIndex:
         """Index a candidate target record (S2 or S3)."""
         tid = rec["entity_id"]
         stem = rec.get("name_stem", "").strip().lower()
-        rec["num_grams"] = max(1, len(stem) - 2) if stem else 1
+        grams = extract_char_ngrams(stem, n=3) if stem else set()
+        rec["num_grams"] = len(grams) if grams else 1
         self.targets[tid] = rec
         
         if stem:
@@ -95,7 +98,6 @@ class CountryCandidateIndex:
                 self.stem_index[prefix_key].append(tid)
                 
             # Character 3-grams
-            grams = extract_char_ngrams(stem, n=3)
             for g in grams:
                 self.gram_index[g].append(tid)
                 self.gram_df[g] += 1
@@ -191,3 +193,29 @@ class CountryCandidateIndex:
         ranked_candidates = sorted(filtered_candidates, key=lambda x: x[1], reverse=True)
         # Cap to top-K candidates (tight bound)
         return [tid for tid, _ in ranked_candidates[:self.max_candidates]]
+
+    def query_candidates_with_scores(self, s1_rec: Dict[str, Any], min_score: float = 3.0) -> List[Tuple[str, float]]:
+        """Query candidates returning (target_id, blocking_score) pairs."""
+        candidates = self.query_candidates(s1_rec, min_score=min_score)
+        if not candidates:
+            return []
+        # Re-derive scores efficiently or track
+        scores = collections.defaultdict(float)
+        s1_stem = s1_rec.get("name_stem", "").strip().lower()
+        if s1_stem:
+            for tid in self.stem_index.get(s1_stem, []):
+                scores[tid] += 12.0
+            words = s1_stem.split()
+            if len(words) >= 2:
+                prefix_key = " ".join(words[:2])
+                for tid in self.stem_index.get(prefix_key, []):
+                    scores[tid] += 6.0
+        s1_addr_keys = extract_address_keys(
+            s1_rec.get("clean_addr", ""),
+            s1_rec.get("postal_code", ""),
+            s1_rec.get("locality", "")
+        )
+        for k in s1_addr_keys:
+            for tid in self.addr_key_index.get(k, []):
+                scores[tid] += 8.0
+        return [(tid, scores[tid]) for tid in candidates]

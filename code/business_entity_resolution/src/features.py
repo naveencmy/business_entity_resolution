@@ -30,31 +30,40 @@ def containment_similarity(set_a: Set[str], set_b: Set[str]) -> float:
         return 0.0
     return len(set_a.intersection(set_b)) / min_len
 
-def levenshtein_similarity(s1: str, s2: str) -> float:
-    """Fast bounded Levenshtein ratio."""
-    if s1 == s2:
-        return 1.0
-    len1, len2 = len(s1), len(s2)
-    if len1 == 0 or len2 == 0:
-        return 0.0
-    if abs(len1 - len2) > max(len1, len2) * 0.7:
-        return 0.0
+try:
+    from rapidfuzz.distance import Levenshtein as rf_lev
+    def levenshtein_similarity(s1: str, s2: str) -> float:
+        if s1 == s2:
+            return 1.0
+        if not s1 or not s2:
+            return 0.0
+        return float(rf_lev.normalized_similarity(s1[:60], s2[:60]))
+except ImportError:
+    def levenshtein_similarity(s1: str, s2: str) -> float:
+        """Fast bounded Levenshtein ratio."""
+        if s1 == s2:
+            return 1.0
+        len1, len2 = len(s1), len(s2)
+        if len1 == 0 or len2 == 0:
+            return 0.0
+        if abs(len1 - len2) > max(len1, len2) * 0.7:
+            return 0.0
 
-    # Truncate if exceedingly long to keep feature extraction fast
-    s1_trunc, s2_trunc = s1[:60], s2[:60]
-    m, n = len(s1_trunc), len(s2_trunc)
-    dp = list(range(n + 1))
-    for i in range(1, m + 1):
-        prev = dp[0]
-        dp[0] = i
-        for j in range(1, n + 1):
-            temp = dp[j]
-            cost = 0 if s1_trunc[i - 1] == s2_trunc[j - 1] else 1
-            dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + cost)
-            prev = temp
-    dist = dp[n]
-    max_l = max(m, n)
-    return max(0.0, 1.0 - (dist / max_l))
+        # Truncate if exceedingly long to keep feature extraction fast
+        s1_trunc, s2_trunc = s1[:60], s2[:60]
+        m, n = len(s1_trunc), len(s2_trunc)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev = dp[0]
+            dp[0] = i
+            for j in range(1, n + 1):
+                temp = dp[j]
+                cost = 0 if s1_trunc[i - 1] == s2_trunc[j - 1] else 1
+                dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + cost)
+                prev = temp
+        dist = dp[n]
+        max_l = max(m, n)
+        return max(0.0, 1.0 - (dist / max_l))
 
 def extract_pairwise_features(s1_rec: Dict[str, Any], cand_rec: Dict[str, Any], blocking_score: float = 0.0) -> List[float]:
     """

@@ -136,12 +136,38 @@ INDIA_PIN_PATTERN = re.compile(r'\b([1-9][0-9]{5})\b')
 US_ZIP_PATTERN = re.compile(r'\b([0-9]{5})(?:-[0-9]{4})?\b')
 FRANCE_CP_PATTERN = re.compile(r'\b(0[1-9]|[1-8][0-9]|9[0-5]|97|98)[0-9]{3}\b')
 
+# US 2-letter States
 US_STATES = {
     'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
     'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
     'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
     'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
     'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
+}
+
+# India States & Major Cities
+INDIA_STATES = {
+    'ANDHRA PRADESH', 'ARUNACHAL PRADESH', 'ASSAM', 'BIHAR', 'CHHATTISGARH',
+    'GOA', 'GUJARAT', 'HARYANA', 'HIMACHAL PRADESH', 'JHARKHAND',
+    'KARNATAKA', 'KERALA', 'MADHYA PRADESH', 'MAHARASHTRA', 'MANIPUR',
+    'MEGHALAYA', 'MIZORAM', 'NAGALAND', 'ODISHA', 'PUNJAB', 'RAJASTHAN',
+    'SIKKIM', 'TAMIL NADU', 'TELANGANA', 'TRIPURA', 'UTTAR PRADESH',
+    'UTTARAKHAND', 'WEST BENGAL', 'DELHI', 'CHANDIGARH', 'PUDUCHERRY',
+    'MUMBAI', 'BANGALORE', 'BENGALURU', 'HYDERABAD', 'CHENNAI', 'KOLKATA',
+    'PUNE', 'AHMEDABAD', 'JAIPUR', 'SURAT', 'LUCKNOW', 'NOIDA', 'GURGAON', 'GURUGRAM'
+}
+
+INDIA_STATE_CODES = {
+    'AP', 'AR', 'AS', 'BR', 'CG', 'GA', 'GJ', 'HR', 'HP', 'JH',
+    'KA', 'KL', 'MP', 'MH', 'MN', 'ML', 'MZ', 'NL', 'OD', 'PB',
+    'RJ', 'SK', 'TN', 'TS', 'TG', 'TR', 'UP', 'UK', 'WB', 'DL'
+}
+
+# France Major Regions / Cities
+FRANCE_CITIES = {
+    'PARIS', 'LYON', 'MARSEILLE', 'TOULOUSE', 'NICE', 'NANTES',
+    'STRASBOURG', 'MONTPELLIER', 'BORDEAUX', 'LILLE', 'RENNES', 'REIMS',
+    'TOULON', 'GRENOBLE', 'DIJON', 'ANGERS', 'NIMES', 'VILLEURBANNE'
 }
 
 def transliterate_to_latin(text: str) -> str:
@@ -209,6 +235,30 @@ def clean_address(address: str, country: str) -> Dict[str, str]:
         found_states = words.intersection(US_STATES)
         if found_states:
             locality = sorted(list(found_states))[0]
+    elif country_upper == "FRANCE":
+        if postal_code and len(postal_code) == 5:
+            locality = f"DEP_{postal_code[:2]}"
+        else:
+            words = set(re.findall(r'\b[A-Za-z]{4,}\b', text.upper()))
+            found_cities = words.intersection(FRANCE_CITIES)
+            if found_cities:
+                locality = sorted(list(found_cities))[0]
+    elif country_upper == "INDIA":
+        upper_text = f" {text.upper()} "
+        matched_state = None
+        for state in INDIA_STATES:
+            if f" {state} " in upper_text:
+                matched_state = state.replace(" ", "_")
+                break
+        if matched_state:
+            locality = matched_state
+        else:
+            words = set(re.findall(r'\b[A-Za-z]{2}\b', text.upper()))
+            found_codes = words.intersection(INDIA_STATE_CODES)
+            if found_codes:
+                locality = sorted(list(found_codes))[0]
+            elif postal_code and len(postal_code) == 6:
+                locality = f"PIN_{postal_code[:2]}"
 
     text = re.sub(r'\b0+([1-9][0-9]*)\b', r'\1', text)
     text = re.sub(r'([A-Za-z]+)-0+([1-9][0-9]*)', r'\1-\2', text)
@@ -240,19 +290,25 @@ def extract_address_keys(clean_addr: str, postal_code: str, locality: str) -> Li
     tokens = [tok for tok in clean_addr.split() if len(tok) > 1]
     numbers = [tok for tok in tokens if any(c.isdigit() for c in tok)]
     words = [tok for tok in tokens if not any(c.isdigit() for c in tok)]
-    num_key = numbers[0] if numbers else ""
     first_word = words[0] if words else ""
     second_word = words[1] if len(words) > 1 else ""
     if postal_code:
         keys.append(f"P#{postal_code}")
-        if num_key: keys.append(f"P#{postal_code}#{num_key}")
-        if first_word: keys.append(f"P#{postal_code}#{first_word}")
-    if locality and num_key:
-        keys.append(f"L#{locality}#{num_key}")
-    if num_key and first_word:
-        keys.append(f"N#{num_key}#{first_word}")
-        if second_word: keys.append(f"N#{num_key}#{first_word}#{second_word}")
-    elif len(words) >= 2:
+        for num in numbers[:2]:
+            keys.append(f"P#{postal_code}#{num}")
+        if first_word:
+            keys.append(f"P#{postal_code}#{first_word}")
+    if locality:
+        for num in numbers[:2]:
+            keys.append(f"L#{locality}#{num}")
+        if first_word:
+            keys.append(f"L#{locality}#{first_word}")
+    for num in numbers[:2]:
+        if first_word:
+            keys.append(f"N#{num}#{first_word}")
+            if second_word:
+                keys.append(f"N#{num}#{first_word}#{second_word}")
+    if len(words) >= 2:
         keys.append(f"W#{first_word}#{second_word}")
     return keys
 
@@ -269,7 +325,8 @@ class CountryCandidateIndex:
     def add_target(self, rec: Dict[str, Any]):
         tid = rec["entity_id"]
         stem = rec.get("name_stem", "").strip().lower()
-        rec["num_grams"] = max(1, len(stem) - 2) if stem else 1
+        grams = extract_char_ngrams(stem, n=3) if stem else set()
+        rec["num_grams"] = len(grams) if grams else 1
         self.targets[tid] = rec
         if stem:
             self.stem_index[stem].append(tid)
@@ -277,7 +334,6 @@ class CountryCandidateIndex:
             if len(words) >= 2:
                 prefix_key = " ".join(words[:2])
                 self.stem_index[prefix_key].append(tid)
-            grams = extract_char_ngrams(stem, n=3)
             for g in grams:
                 self.gram_index[g].append(tid)
                 self.gram_df[g] += 1
@@ -292,7 +348,6 @@ class CountryCandidateIndex:
     def finalize_index(self):
         total = len(self.targets)
         if total == 0: return
-        # Prune only true ubiquitous stopgrams (> 2% of targets or > 25,000) to protect real business vocabulary
         max_df = max(15000, int(total * 0.02))
         pruned_grams = [g for g, count in self.gram_df.items() if count > max_df]
         for g in pruned_grams:
@@ -301,7 +356,11 @@ class CountryCandidateIndex:
         for k in pruned_addr:
             del self.addr_key_index[k]
 
-    def query_candidates(self, s1_rec: Dict[str, Any], min_score: float = 2.0) -> List[str]:
+    def query_candidates(self, s1_rec: Dict[str, Any], min_score: float = 3.0) -> List[str]:
+        scored = self.query_candidates_with_scores(s1_rec, min_score=min_score)
+        return [tid for tid, _ in scored]
+
+    def query_candidates_with_scores(self, s1_rec: Dict[str, Any], min_score: float = 3.0) -> List[Tuple[str, float]]:
         scores: Dict[str, float] = collections.defaultdict(float)
         s1_stem = s1_rec.get("name_stem", "").strip().lower()
         if s1_stem:
@@ -330,7 +389,7 @@ class CountryCandidateIndex:
                     if postings:
                         for tid in postings:
                             gram_hits[tid] += 1
-                min_hits = max(2, int(num_s1_grams * 0.20)) if num_s1_grams > 3 else 1
+                min_hits = max(2, int(num_s1_grams * 0.25)) if num_s1_grams > 3 else 1
                 for tid, hits in gram_hits.items():
                     if hits < min_hits:
                         continue
@@ -338,13 +397,13 @@ class CountryCandidateIndex:
                     if target_rec:
                         t_grams_count = target_rec.get("num_grams", 1)
                         overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
-                        if overlap >= 0.25:
-                            scores[tid] += overlap * 10.0
+                        if overlap >= 0.28:
+                            scores[tid] += overlap * 7.0
         if not scores: return []
         filtered = [(tid, sc) for tid, sc in scores.items() if sc >= min_score]
         if not filtered: return []
         ranked = sorted(filtered, key=lambda x: x[1], reverse=True)
-        return [tid for tid, _ in ranked[:self.max_candidates]]
+        return ranked[:self.max_candidates]
 
 # -----------------------------------------------------------------------------
 # 4. PAIRWISE FEATURE EXTRACTION
@@ -360,25 +419,32 @@ def containment_similarity(set_a: Set[str], set_b: Set[str]) -> float:
     m = min(len(set_a), len(set_b))
     return len(set_a.intersection(set_b)) / m if m > 0 else 0.0
 
-def levenshtein_similarity(s1: str, s2: str) -> float:
-    if s1 == s2: return 1.0
-    len1, len2 = len(s1), len(s2)
-    if len1 == 0 or len2 == 0: return 0.0
-    if abs(len1 - len2) > max(len1, len2) * 0.7: return 0.0
-    s1_t, s2_t = s1[:60], s2[:60]
-    m, n = len(s1_t), len(s2_t)
-    dp = list(range(n + 1))
-    for i in range(1, m + 1):
-        prev = dp[0]
-        dp[0] = i
-        for j in range(1, n + 1):
-            temp = dp[j]
-            cost = 0 if s1_t[i - 1] == s2_t[j - 1] else 1
-            dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + cost)
-            prev = temp
-    return max(0.0, 1.0 - (dp[n] / max(m, n)))
+try:
+    from rapidfuzz.distance import Levenshtein as rf_lev
+    def levenshtein_similarity(s1: str, s2: str) -> float:
+        if s1 == s2: return 1.0
+        if not s1 or not s2: return 0.0
+        return float(rf_lev.normalized_similarity(s1[:60], s2[:60]))
+except ImportError:
+    def levenshtein_similarity(s1: str, s2: str) -> float:
+        if s1 == s2: return 1.0
+        len1, len2 = len(s1), len(s2)
+        if len1 == 0 or len2 == 0: return 0.0
+        if abs(len1 - len2) > max(len1, len2) * 0.7: return 0.0
+        s1_t, s2_t = s1[:60], s2[:60]
+        m, n = len(s1_t), len(s2_t)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev = dp[0]
+            dp[0] = i
+            for j in range(1, n + 1):
+                temp = dp[j]
+                cost = 0 if s1_t[i - 1] == s2_t[j - 1] else 1
+                dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + cost)
+                prev = temp
+        return max(0.0, 1.0 - (dp[n] / max(m, n)))
 
-def extract_pairwise_features(s1_rec: Dict[str, Any], cand_rec: Dict[str, Any]) -> List[float]:
+def extract_pairwise_features(s1_rec: Dict[str, Any], cand_rec: Dict[str, Any], blocking_score: float = 0.0) -> List[float]:
     stem1 = s1_rec.get("name_stem", "").strip().lower()
     stem2 = cand_rec.get("name_stem", "").strip().lower()
     full1 = s1_rec.get("name_full", "").strip().lower()
@@ -430,33 +496,63 @@ def extract_pairwise_features(s1_rec: Dict[str, Any], cand_rec: Dict[str, Any]) 
     name_or_addr_max = max(name_gram_jaccard, max(addr_jaccard, addr_containment))
     cand_id = cand_rec.get("entity_id", "")
     is_s3 = 1.0 if cand_id.startswith("S3-") else 0.0
+    norm_blocking_sc = min(1.0, blocking_score / 20.0)
 
     return [
         exact_stem, exact_full, name_gram_jaccard, name_token_jaccard,
         name_token_containment, name_lev, first_word_match, name_len_ratio,
         postal_match, locality_match, addr_jaccard, addr_containment,
-        addr_num_overlap, name_x_addr, name_or_addr_max, is_s3
+        addr_num_overlap, name_x_addr, name_or_addr_max, is_s3,
+        norm_blocking_sc
     ]
 
 # -----------------------------------------------------------------------------
 # 5. METRIC & MATCHING MODEL (GPU ACCELERATED)
 # -----------------------------------------------------------------------------
-def compute_macro_f05(ground_truth: Dict[str, Set[str]], predictions: Dict[str, Set[str]]) -> Dict[str, float]:
-    scores = []
+def compute_macro_f05(
+    ground_truth: Dict[str, Set[str]],
+    predictions: Dict[str, Set[str]],
+    entity_countries: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    entity_scores = []
+    country_scores: Dict[str, List[float]] = collections.defaultdict(list)
+    macro_p, macro_r = [], []
+
     for s1_id, true_set in ground_truth.items():
         pred_set = predictions.get(s1_id, set())
+        country = entity_countries.get(s1_id, "UNKNOWN") if entity_countries else None
+
         if not true_set:
-            scores.append(1.0 if not pred_set else 0.0)
+            score = 1.0 if not pred_set else 0.0
+            entity_scores.append(score)
+            macro_p.append(score)
+            macro_r.append(1.0)
+            if country: country_scores[country].append(score)
             continue
         if not pred_set:
-            scores.append(0.0)
+            entity_scores.append(0.0)
+            macro_p.append(0.0)
+            macro_r.append(0.0)
+            if country: country_scores[country].append(0.0)
             continue
         tp = len(true_set.intersection(pred_set))
         p = tp / len(pred_set)
         r = tp / len(true_set)
+        macro_p.append(p)
+        macro_r.append(r)
         denom = (0.25 * p) + r
-        scores.append((1.25 * p * r) / denom if denom > 0 else 0.0)
-    return {"macro_f05": float(np.mean(scores)) if scores else 0.0}
+        f05 = (1.25 * p * r) / denom if denom > 0 else 0.0
+        entity_scores.append(f05)
+        if country: country_scores[country].append(f05)
+
+    res = {
+        "macro_f05": float(np.mean(entity_scores)) if entity_scores else 0.0,
+        "precision": float(np.mean(macro_p)) if macro_p else 0.0,
+        "recall": float(np.mean(macro_r)) if macro_r else 0.0
+    }
+    if country_scores:
+        res["per_country"] = {c: float(np.mean(scs)) for c, scs in country_scores.items()}
+    return res
 
 class EntityMatcher:
     def __init__(self):
@@ -466,7 +562,7 @@ class EntityMatcher:
             if torch.cuda.is_available():
                 device = "cuda"
                 print(f"[Device Detector] CUDA GPU detected: {torch.cuda.get_device_name(0)}")
-        except ImportError:
+        except Exception:
             pass
 
         self.clf = xgb.XGBClassifier(
@@ -482,40 +578,55 @@ class EntityMatcher:
             random_state=42,
             n_jobs=-1
         )
-        self.optimal_threshold: float = 0.54
+        self.optimal_threshold: float = 0.70
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         self.clf.fit(X, y)
-        # Switch to CPU for rapid inplace prediction without PCIe copy overhead on small batches
-        try:
-            self.clf.set_params(device="cpu")
-        except Exception:
-            pass
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         if len(X) == 0:
             return np.array([], dtype=np.float32)
         return self.clf.predict_proba(X)[:, 1]
 
-    def optimize_threshold(self, candidate_pairs: List[Tuple[str, str]], probs: np.ndarray, gt: Dict[str, Set[str]]):
-        best_t, best_score = 0.54, -1.0
-        for tau in np.arange(0.40, 0.95, 0.02):
-            preds = {s1: set() for s1 in gt.keys()}
-            for (s1_id, cid), p in zip(candidate_pairs, probs):
-                if p >= tau: preds[s1_id].add(cid)
+    def optimize_threshold(
+        self,
+        candidate_pairs: List[Tuple[str, str]],
+        probs: np.ndarray,
+        gt: Dict[str, Set[str]],
+        threshold_range: Tuple[float, float, float] = (0.50, 0.92, 0.02)
+    ) -> float:
+        best_t, best_score = 0.70, -1.0
+        entity_cands: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
+        for (s1_id, cid), p in zip(candidate_pairs, probs):
+            entity_cands[s1_id].append((cid, float(p)))
+
+        start, stop, step = threshold_range
+        print("Optimizing probability threshold for Macro F_0.5 (Two-Stage Anchor Gate)...")
+        for tau in np.arange(start, stop + step, step):
+            anchor_t = float(tau)
+            expansion_t = max(0.45, anchor_t - 0.08)
+            preds: Dict[str, Set[str]] = {s1: set() for s1 in gt.keys()}
+            for s1_id, c_list in entity_cands.items():
+                if not c_list: continue
+                max_p = max(p for _, p in c_list)
+                if max_p >= anchor_t:
+                    preds[s1_id] = {cid for cid, p in c_list if p >= expansion_t}
+
             sc = compute_macro_f05(gt, preds)["macro_f05"]
             if sc > best_score:
                 best_score = sc
-                best_t = float(tau)
-        print(f"Optimal Threshold: {best_t:.2f} (Macro F_0.5: {best_score:.4f})")
+                best_t = anchor_t
+
+        print(f"Optimal Anchor Threshold: {best_t:.2f} (Held-Out Validation Macro F_0.5: {best_score:.4f})")
         self.optimal_threshold = best_t
+        return best_t
 
     def predict_entity_matches(
         self,
         candidate_ids: List[str],
         probabilities: np.ndarray,
-        anchor_threshold: float = 0.54,
-        expansion_threshold: float = 0.46
+        anchor_threshold: float = 0.72,
+        expansion_threshold: float = 0.65
     ) -> List[str]:
         if len(candidate_ids) == 0 or len(probabilities) == 0:
             return []
@@ -532,26 +643,32 @@ class EntityMatcher:
 # 6. END-TO-END PIPELINE EXECUTION
 # -----------------------------------------------------------------------------
 def run():
+    import random
     print("=" * 60)
     print("RUNNING KAGGLE BUSINESS ENTITY RESOLUTION PIPELINE")
     print(f"Dataset root: {DATASET_DIR}")
     print(f"Output directory: {OUTPUT_DIR}")
     print("=" * 60)
 
-    # Step A: Train model on ground truth
-    print("\n[Phase 1] Ingesting training ground truth...")
-    gt = {}
+    # Step A: Train model on ground truth with strict 80/20 train/validation split
+    print("\n[Phase 1] Ingesting training ground truth with shuffling...")
+    all_gt = []
     with open(TRAIN_GT, "r", encoding="utf-8") as f:
         f.readline()
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2 and parts[1].strip():
-                gt[parts[0]] = set(parts[1].split(","))
-                if len(gt) >= 20000: break
+                all_gt.append((parts[0], set(parts[1].split(","))))
+
+    rng = random.Random(42)
+    rng.shuffle(all_gt)
+    sample_size = min(10000, len(all_gt))
+    gt = dict(all_gt[:sample_size])
 
     target_s1 = set(gt.keys())
     target_matches = set()
     for m in gt.values(): target_matches.update(m)
+    print(f"Sampled {len(gt)} Ground Truth entities ({len(target_matches)} true matches).")
 
     s1_train = {}
     with open(TRAIN_S1, "r", encoding="utf-8") as f:
@@ -568,7 +685,7 @@ def run():
                 }
 
     train_indices = {c: CountryCandidateIndex(c, max_candidates=15) for c in {r["country"] for r in s1_train.values()}}
-    distractor_cap = 120000
+    distractor_cap = 60000
     for path in [TRAIN_S2, TRAIN_S3]:
         with open(path, "r", encoding="utf-8") as f:
             r = csv.reader(f, delimiter="\t")
@@ -592,25 +709,99 @@ def run():
 
     for c, idx in train_indices.items(): idx.finalize_index()
 
-    X_list, y_list, pairs_list = [], [], []
+    # 80/20 Entity-level train/validation split
+    entity_id_list = list(s1_train.keys())
+    rng.shuffle(entity_id_list)
+    split_idx = int(len(entity_id_list) * 0.8)
+    train_ids = set(entity_id_list[:split_idx])
+    val_ids = set(entity_id_list[split_idx:])
+
+    gt_train = {eid: gt[eid] for eid in train_ids if eid in gt}
+    gt_val = {eid: gt[eid] for eid in val_ids if eid in gt}
+
+    X_train, y_train, pairs_train = [], [], []
+    X_val, y_val, pairs_val = [], [], []
+
+    print("Generating candidate pairs without force-injection cheat...")
+    blocking_hits = 0
+    blocking_total = 0
+
     for s1_id, s1_rec in s1_train.items():
         c = s1_rec["country"]
         idx = train_indices[c]
         true_set = gt.get(s1_id, set())
-        cands = idx.query_candidates(s1_rec)
-        for t_id in true_set:
-            if t_id in idx.targets and t_id not in cands: cands.append(t_id)
-        for cid in cands:
+
+        cand_with_scores = idx.query_candidates_with_scores(s1_rec)
+        cand_ids = [cid for cid, _ in cand_with_scores]
+
+        if true_set:
+            blocking_hits += len(true_set.intersection(set(cand_ids)))
+            blocking_total += len(true_set)
+
+        is_val = s1_id in val_ids
+
+        for cid, sc in cand_with_scores:
             cand_rec = idx.targets.get(cid)
             if not cand_rec: continue
-            X_list.append(extract_pairwise_features(s1_rec, cand_rec))
-            y_list.append(1 if cid in true_set else 0)
-            pairs_list.append((s1_id, cid))
+            is_pos = 1 if cid in true_set else 0
+            feats = extract_pairwise_features(s1_rec, cand_rec, blocking_score=sc)
+            if is_val:
+                X_val.append(feats)
+                y_val.append(is_pos)
+                pairs_val.append((s1_id, cid))
+            else:
+                X_train.append(feats)
+                y_train.append(is_pos)
+                pairs_train.append((s1_id, cid))
+
+    if blocking_total > 0:
+        print(f"Honest Candidate Recall (Ceiling): {blocking_hits / blocking_total:.4f} ({blocking_hits}/{blocking_total})")
+
+    X_tr = np.array(X_train, dtype=np.float32)
+    y_tr = np.array(y_train, dtype=np.int32)
+    X_v = np.array(X_val, dtype=np.float32)
+    y_v = np.array(y_val, dtype=np.int32)
+
+    print(f"Train Matrix Shape: {X_tr.shape} (Pos: {np.sum(y_tr)}, Neg: {len(y_tr) - np.sum(y_tr)})")
+    print(f"Val Matrix Shape:   {X_v.shape} (Pos: {np.sum(y_v)}, Neg: {len(y_v) - np.sum(y_v)})")
 
     matcher = EntityMatcher()
-    matcher.fit(np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int32))
-    probs = matcher.predict_proba(np.array(X_list, dtype=np.float32))
-    matcher.optimize_threshold(pairs_list, probs, gt)
+    matcher.fit(X_tr, y_tr)
+
+    val_probs = matcher.predict_proba(X_v)
+    matcher.optimize_threshold(pairs_val, val_probs, gt_val)
+
+    # Validate held-out score
+    val_preds: Dict[str, Set[str]] = {eid: set() for eid in val_ids}
+    val_entity_cands: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
+    for (s1_id, cid), prob in zip(pairs_val, val_probs):
+        val_entity_cands[s1_id].append((cid, float(prob)))
+
+    for s1_id in val_ids:
+        c_list = val_entity_cands.get(s1_id, [])
+        if not c_list: continue
+        c_ids = [cid for cid, _ in c_list]
+        p_arr = np.array([p for _, p in c_list], dtype=np.float32)
+        m_ids = matcher.predict_entity_matches(
+            c_ids, p_arr,
+            anchor_threshold=matcher.optimal_threshold,
+            expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
+        )
+        val_preds[s1_id] = set(m_ids)
+
+    val_countries = {eid: s1_train[eid]["country"] for eid in val_ids if eid in s1_train}
+    metrics = compute_macro_f05(gt_val, val_preds, entity_countries=val_countries)
+    print("\n" + "=" * 50)
+    print(f"HONEST HELD-OUT VALIDATION METRICS (Zero Leakage):")
+    print(f"  Macro F_0.5: {metrics['macro_f05']:.4f}")
+    print(f"  Precision:   {metrics['precision']:.4f}")
+    print(f"  Recall:      {metrics['recall']:.4f}")
+    if "per_country" in metrics:
+        print("  Per-Country Breakdown:")
+        for c, sc in metrics["per_country"].items():
+            print(f"    - {c}: {sc:.4f}")
+    print("=" * 50 + "\n")
+
     del train_indices, s1_train
 
     # Step B: Test Set Inference
@@ -654,32 +845,49 @@ def run():
         idx.finalize_index()
         print(f"Index built ({len(idx.targets)} targets). Running inference...")
 
-        for i, s1_rec in enumerate(s1_list):
-            s1_id = s1_rec["entity_id"]
-            cands = idx.query_candidates(s1_rec)
-            if not cands:
-                results_cands[s1_id] = ""
-                results_matches[s1_id] = ""
-                continue
-            results_cands[s1_id] = ",".join(cands)
-            cand_recs = [idx.targets[cid] for cid in cands if cid in idx.targets]
-            if not cand_recs:
-                results_matches[s1_id] = ""
-                continue
-            feats_matrix = np.array([
-                extract_pairwise_features(s1_rec, cr) for cr in cand_recs
-            ], dtype=np.float32)
-            probs = matcher.predict_proba(feats_matrix)
-            cand_ids = [cr["entity_id"] for cr in cand_recs]
-            m_ids = matcher.predict_entity_matches(
-                cand_ids, probs,
-                anchor_threshold=matcher.optimal_threshold,
-                expansion_threshold=max(0.40, matcher.optimal_threshold - 0.08)
-            )
-            results_matches[s1_id] = ",".join(m_ids) if m_ids else ""
+        batch_size = 2000
+        for b_start in range(0, len(s1_list), batch_size):
+            b_chunk = s1_list[b_start : b_start + batch_size]
+            batch_feats = []
+            entity_cand_meta = []
 
-            if (i + 1) % 50000 == 0 or (i + 1) == len(s1_list):
-                print(f"  [{country}] {i + 1}/{len(s1_list)} complete ({((i + 1)/len(s1_list))*100:.1f}%).")
+            for s1_rec in b_chunk:
+                s1_id = s1_rec["entity_id"]
+                cand_with_scores = idx.query_candidates_with_scores(s1_rec)
+                if not cand_with_scores:
+                    results_cands[s1_id] = ""
+                    results_matches[s1_id] = ""
+                    continue
+
+                cands = [cid for cid, _ in cand_with_scores]
+                results_cands[s1_id] = ",".join(cands)
+                cand_recs = [(idx.targets[cid], sc) for cid, sc in cand_with_scores if cid in idx.targets]
+                if not cand_recs:
+                    results_matches[s1_id] = ""
+                    continue
+
+                start_off = len(batch_feats)
+                for cr, sc in cand_recs:
+                    batch_feats.append(extract_pairwise_features(s1_rec, cr, blocking_score=sc))
+                end_off = len(batch_feats)
+                cand_ids = [cr["entity_id"] for cr, _ in cand_recs]
+                entity_cand_meta.append((s1_id, cand_ids, start_off, end_off))
+
+            if batch_feats:
+                feats_matrix = np.array(batch_feats, dtype=np.float32)
+                batch_probs = matcher.predict_proba(feats_matrix)
+                for s1_id, cand_ids, s_off, e_off in entity_cand_meta:
+                    probs = batch_probs[s_off:e_off]
+                    m_ids = matcher.predict_entity_matches(
+                        cand_ids, probs,
+                        anchor_threshold=matcher.optimal_threshold,
+                        expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
+                    )
+                    results_matches[s1_id] = ",".join(m_ids) if m_ids else ""
+
+            processed = min(b_start + batch_size, len(s1_list))
+            if processed % 50000 == 0 or processed == len(s1_list):
+                print(f"  [{country}] {processed}/{len(s1_list)} complete ({((processed)/len(s1_list))*100:.1f}%).")
         del idx
 
     # Step C: Write outputs

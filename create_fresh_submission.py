@@ -40,7 +40,7 @@ def find_file(filename: str, search_roots: list) -> Path:
             return matches[0]
     return None
 
-def create_fresh_submission(team_name: str = "alpha_resolvers"):
+def create_fresh_submission(team_name: str = "KernelRaise"):
     print("=" * 65)
     print(f"[+] CREATING FRESH SUBMISSION FOLDER: {team_name}_submission")
     print("=" * 65)
@@ -61,6 +61,7 @@ def create_fresh_submission(team_name: str = "alpha_resolvers"):
         Path("/kaggle/working/output"),
         Path("/kaggle/working/business_entity_resolution/output"),
         Path("/kaggle/working"),
+        base_dir,
         base_dir / "output",
         base_dir / "code" / "business_entity_resolution" / "output",
     ]
@@ -69,7 +70,7 @@ def create_fresh_submission(team_name: str = "alpha_resolvers"):
     for p in candidate_output_paths:
         m = p / "matching_results.tsv"
         c = p / "candidate_pairs.tsv"
-        if m.exists() and c.exists():
+        if m.exists() and c.exists() and m.stat().st_size > 0:
             match_tsv, cand_tsv = m, c
             break
 
@@ -80,7 +81,6 @@ def create_fresh_submission(team_name: str = "alpha_resolvers"):
         print(f"  [OK] Copied output/candidate_pairs.tsv  ({cand_tsv.stat().st_size / 1e6:.1f} MB)")
     else:
         print("  [INFO] Output TSVs not found locally yet. Created placeholder files.")
-        print("         (When run in Kaggle, the real generated TSVs will be automatically copied).")
         (out_dir / "matching_results.tsv").touch()
         (out_dir / "candidate_pairs.tsv").touch()
 
@@ -108,11 +108,12 @@ def create_fresh_submission(team_name: str = "alpha_resolvers"):
         shutil.copy(kaggle_pipe, code_dest / "kaggle_pipeline.py")
         print("  [OK] Copied code/business_entity_resolution/kaggle_pipeline.py")
 
-    # 4. Copy Documentation_template.md
-    doc_file = base_dir / "Documentation_template.md"
-    if doc_file.exists():
-        shutil.copy(doc_file, target_dir / "Documentation_template.md")
-        print("  [OK] Copied Documentation_template.md (Filled official methodology write-up)")
+    # 4. Copy documentation.md and Documentation_template.md
+    for doc_name in ["documentation.md", "Documentation_template.md", "README.md"]:
+        f_src = base_dir / doc_name
+        if f_src.exists():
+            shutil.copy(f_src, target_dir / doc_name)
+            print(f"  [OK] Copied {doc_name}")
 
     # 5. Build ZIP archive
     zip_path = base_dir / f"{team_name}_submission"

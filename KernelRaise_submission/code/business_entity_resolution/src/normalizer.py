@@ -68,6 +68,31 @@ US_STATES = {
     'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
 }
 
+# India States & Major Cities
+INDIA_STATES = {
+    'ANDHRA PRADESH', 'ARUNACHAL PRADESH', 'ASSAM', 'BIHAR', 'CHHATTISGARH',
+    'GOA', 'GUJARAT', 'HARYANA', 'HIMACHAL PRADESH', 'JHARKHAND',
+    'KARNATAKA', 'KERALA', 'MADHYA PRADESH', 'MAHARASHTRA', 'MANIPUR',
+    'MEGHALAYA', 'MIZORAM', 'NAGALAND', 'ODISHA', 'PUNJAB', 'RAJASTHAN',
+    'SIKKIM', 'TAMIL NADU', 'TELANGANA', 'TRIPURA', 'UTTAR PRADESH',
+    'UTTARAKHAND', 'WEST BENGAL', 'DELHI', 'CHANDIGARH', 'PUDUCHERRY',
+    'MUMBAI', 'BANGALORE', 'BENGALURU', 'HYDERABAD', 'CHENNAI', 'KOLKATA',
+    'PUNE', 'AHMEDABAD', 'JAIPUR', 'SURAT', 'LUCKNOW', 'NOIDA', 'GURGAON', 'GURUGRAM'
+}
+
+INDIA_STATE_CODES = {
+    'AP', 'AR', 'AS', 'BR', 'CG', 'GA', 'GJ', 'HR', 'HP', 'JH',
+    'KA', 'KL', 'MP', 'MH', 'MN', 'ML', 'MZ', 'NL', 'OD', 'PB',
+    'RJ', 'SK', 'TN', 'TS', 'TG', 'TR', 'UP', 'UK', 'WB', 'DL'
+}
+
+# France Major Regions / Cities
+FRANCE_CITIES = {
+    'PARIS', 'LYON', 'MARSEILLE', 'TOULOUSE', 'NICE', 'NANTES',
+    'STRASBOURG', 'MONTPELLIER', 'BORDEAUX', 'LILLE', 'RENNES', 'REIMS',
+    'TOULON', 'GRENOBLE', 'DIJON', 'ANGERS', 'NIMES', 'VILLEURBANNE'
+}
+
 
 def transliterate_to_latin(text: str) -> str:
     """
@@ -178,13 +203,37 @@ def clean_address(address: str, country: str) -> Dict[str, str]:
         if m:
             postal_code = m.group(0)
             
-    # Extract locality / state indicator for US
+    # Extract locality / state indicator for US, France, and India
     locality = ""
     if country_upper == "US":
         words = set(re.findall(r'\b[A-Za-z]{2}\b', text.upper()))
         found_states = words.intersection(US_STATES)
         if found_states:
             locality = sorted(list(found_states))[0]
+    elif country_upper == "FRANCE":
+        if postal_code and len(postal_code) == 5:
+            locality = f"DEP_{postal_code[:2]}"
+        else:
+            words = set(re.findall(r'\b[A-Za-z]{4,}\b', text.upper()))
+            found_cities = words.intersection(FRANCE_CITIES)
+            if found_cities:
+                locality = sorted(list(found_cities))[0]
+    elif country_upper == "INDIA":
+        upper_text = f" {text.upper()} "
+        matched_state = None
+        for state in INDIA_STATES:
+            if f" {state} " in upper_text:
+                matched_state = state.replace(" ", "_")
+                break
+        if matched_state:
+            locality = matched_state
+        else:
+            words = set(re.findall(r'\b[A-Za-z]{2}\b', text.upper()))
+            found_codes = words.intersection(INDIA_STATE_CODES)
+            if found_codes:
+                locality = sorted(list(found_codes))[0]
+            elif postal_code and len(postal_code) == 6:
+                locality = f"PIN_{postal_code[:2]}"
             
     # Normalize zero-padded numbers before punctuation stripping (e.g. AF-0684 -> AF-684, 00127/4 -> 127/4)
     text = re.sub(r'\b0+([1-9][0-9]*)\b', r'\1', text)

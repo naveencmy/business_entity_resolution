@@ -12,6 +12,7 @@ import sys
 import os
 import csv
 import time
+import collections
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Any, Optional
 
@@ -26,31 +27,37 @@ from blocking import CountryCandidateIndex
 from features import extract_pairwise_features, FEATURE_NAMES
 from model import EntityMatcher, compute_macro_f05
 
-def train_model(sample_entities: int = 2500) -> EntityMatcher:
+import random
+
+def train_model(sample_entities: int = 5000) -> EntityMatcher:
     """
-    Train precision-heavy matcher using real ground truth positive pairs
-    and hard negative pairs mined via candidate blocking.
+    Train precision-heavy matcher with strict entity-level 80/20 train/val split.
+    - Eliminates resubstitution leakage: fit only on train split, threshold tuned only on val split.
+    - Eliminates candidate cheat: no force-injection of true positives into candidate lists.
+    - Real diagnostic blocking recall tracking.
     """
-    print(f"=== Starting Model Training (Sample Size: {sample_entities}) ===")
+    print(f"=== Starting Honest Model Training (Entity Sample: {sample_entities}) ===")
     start_time = time.time()
     
-    # 1. Load Ground Truth sample
-    gt: Dict[str, Set[str]] = {}
+    # 1. Ingest Ground Truth sample with shuffling
+    all_gt_lines = []
     with open(config.TRAIN_GT, "r", encoding="utf-8") as f:
         f.readline()
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2 and parts[1].strip():
-                gt[parts[0]] = set(parts[1].split(","))
-                if len(gt) >= sample_entities:
-                    break
+                all_gt_lines.append((parts[0], set(parts[1].split(","))))
 
-    target_s1_ids = set(gt.keys())
+    rng = random.Random(42)
+    rng.shuffle(all_gt_lines)
+    selected_gt = dict(all_gt_lines[:sample_entities])
+
+    target_s1_ids = set(selected_gt.keys())
     target_match_ids = set()
-    for m in gt.values():
+    for m in selected_gt.values():
         target_match_ids.update(m)
 
-    print(f"Loaded {len(gt)} S1 ground truth entities ({len(target_match_ids)} true match records).")
+    print(f"Sampled {len(selected_gt)} S1 ground truth entities ({len(target_match_ids)} true matches).")
 
     # 2. Ingest S1 records
     s1_records: Dict[str, Dict[str, Any]] = {}
@@ -77,11 +84,11 @@ def train_model(sample_entities: int = 2500) -> EntityMatcher:
                     "clean_addr": addr_info["clean_tokens"],
                 }
 
-    # 3. Build candidate index from S2 and S3 (target matches + distractors)
+    # 3. Build candidate index from S2 and S3 (target matches + scaled distractors)
     countries = list({r["country"] for r in s1_records.values()})
     indices = {c: CountryCandidateIndex(c, max_candidates=15) for c in countries}
     
-    distractor_cap = 40000
+    distractor_cap = 60000
     for path in [config.TRAIN_S2, config.TRAIN_S3]:
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.reader(f, delimiter="\t")
@@ -115,44 +122,109 @@ def train_model(sample_entities: int = 2500) -> EntityMatcher:
     for c, idx in indices.items():
         idx.finalize_index()
 
-    # 4. Generate pairs and extract features
-    X_list = []
-    y_list = []
-    pairs_list = []
+    # 4. Strict Entity-Level 80/20 Train/Validation Split
+    entity_id_list = list(s1_records.keys())
+    rng.shuffle(entity_id_list)
+    split_idx = int(len(entity_id_list) * 0.8)
+    train_ids = set(entity_id_list[:split_idx])
+    val_ids = set(entity_id_list[split_idx:])
 
-    print("Generating candidate pairs and extracting pairwise features...")
+    gt_train = {eid: selected_gt[eid] for eid in train_ids if eid in selected_gt}
+    gt_val = {eid: selected_gt[eid] for eid in val_ids if eid in selected_gt}
+
+    print(f"Entity Split: {len(train_ids)} Train Entities (80%), {len(val_ids)} Validation Entities (20%).")
+
+    # Diagnostic blocking metrics
+    blocking_hits = 0
+    blocking_total_true = 0
+
+    X_train, y_train, pairs_train = [], [], []
+    X_val, y_val, pairs_val = [], [], []
+
+    print("Generating candidate pairs without force-injection cheat...")
     for s1_id, s1_rec in s1_records.items():
         c = s1_rec["country"]
         idx = indices[c]
-        true_set = gt.get(s1_id, set())
+        true_set = selected_gt.get(s1_id, set())
 
-        candidates = idx.query_candidates(s1_rec)
-        for true_id in true_set:
-            if true_id in idx.targets and true_id not in candidates:
-                candidates.append(true_id)
+        # REAL BLOCKING CANDIDATES ONLY
+        cand_with_scores = idx.query_candidates_with_scores(s1_rec)
+        cand_ids = [cid for cid, _ in cand_with_scores]
 
-        for cand_id in candidates:
+        # Track blocking recall honestly
+        if true_set:
+            blocking_hits += len(true_set.intersection(set(cand_ids)))
+            blocking_total_true += len(true_set)
+
+        is_val = s1_id in val_ids
+
+        for cand_id, sc in cand_with_scores:
             cand_rec = idx.targets.get(cand_id)
             if not cand_rec:
                 continue
             is_pos = 1 if cand_id in true_set else 0
-            feats = extract_pairwise_features(s1_rec, cand_rec)
-            X_list.append(feats)
-            y_list.append(is_pos)
-            pairs_list.append((s1_id, cand_id))
+            feats = extract_pairwise_features(s1_rec, cand_rec, blocking_score=sc)
 
-    X = np.array(X_list, dtype=np.float32)
-    y = np.array(y_list, dtype=np.int32)
-    print(f"Training dataset shape: {X.shape} (Positives: {np.sum(y)}, Negatives: {len(y) - np.sum(y)})")
+            if is_val:
+                X_val.append(feats)
+                y_val.append(is_pos)
+                pairs_val.append((s1_id, cand_id))
+            else:
+                X_train.append(feats)
+                y_train.append(is_pos)
+                pairs_train.append((s1_id, cand_id))
 
-    # 5. Fit model
+    if blocking_total_true > 0:
+        print(f"Honest Candidate Generation Recall (Ceiling): {blocking_hits / blocking_total_true:.4f} ({blocking_hits}/{blocking_total_true})")
+
+    X_tr = np.array(X_train, dtype=np.float32)
+    y_tr = np.array(y_train, dtype=np.int32)
+    X_v = np.array(X_val, dtype=np.float32)
+    y_v = np.array(y_val, dtype=np.int32)
+
+    print(f"Train Matrix Shape: {X_tr.shape} (Pos: {np.sum(y_tr)}, Neg: {len(y_tr) - np.sum(y_tr)})")
+    print(f"Val Matrix Shape:   {X_v.shape} (Pos: {np.sum(y_v)}, Neg: {len(y_v) - np.sum(y_v)})")
+
+    # 5. Fit Model ONLY on Train Split
     matcher = EntityMatcher(model_type="xgb")
-    matcher.fit(X, y)
+    matcher.fit(X_tr, y_tr)
 
-    # 6. Optimize F_0.5 probability threshold
-    probs = matcher.predict_proba(X)
-    matcher.optimize_threshold(pairs_list, probs, gt)
-    
+    # 6. Optimize Decision Threshold ONLY on Held-Out Validation Split
+    val_probs = matcher.predict_proba(X_v)
+    matcher.optimize_threshold(pairs_val, val_probs, gt_val)
+
+    # 7. Evaluate honest held-out validation metrics with per-country breakdown
+    val_preds: Dict[str, Set[str]] = {eid: set() for eid in val_ids}
+    val_entity_cands: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
+    for (s1_id, cid), prob in zip(pairs_val, val_probs):
+        val_entity_cands[s1_id].append((cid, float(prob)))
+
+    for s1_id in val_ids:
+        c_list = val_entity_cands.get(s1_id, [])
+        if not c_list:
+            continue
+        c_ids = [cid for cid, _ in c_list]
+        p_arr = np.array([p for _, p in c_list], dtype=np.float32)
+        m_ids = matcher.predict_entity_matches(
+            c_ids, p_arr,
+            anchor_threshold=matcher.optimal_threshold,
+            expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
+        )
+        val_preds[s1_id] = set(m_ids)
+
+    val_countries = {eid: s1_records[eid]["country"] for eid in val_ids if eid in s1_records}
+    metrics = compute_macro_f05(gt_val, val_preds, entity_countries=val_countries)
+    print("\n" + "=" * 50)
+    print(f"HONEST HELD-OUT VALIDATION RESULTS (Zero Leakage):")
+    print(f"  Macro F_0.5: {metrics['macro_f05']:.4f}")
+    print(f"  Precision:   {metrics['precision']:.4f}")
+    print(f"  Recall:      {metrics['recall']:.4f}")
+    if "per_country" in metrics:
+        print("  Per-Country Breakdown:")
+        for c, sc in metrics["per_country"].items():
+            print(f"    - {c}: {sc:.4f}")
+    print("=" * 50 + "\n")
+
     # Save model artifact
     model_save_path = Path(__file__).resolve().parent / "matcher_model.pkl"
     matcher.save(str(model_save_path))
@@ -258,45 +330,59 @@ def run_test_inference(matcher: Optional[EntityMatcher] = None):
         matched_count = 0
         singleton_count = 0
         
-        for i, s1_rec in enumerate(s1_list):
-            s1_id = s1_rec["entity_id"]
-            cands = idx.query_candidates(s1_rec)
-            
-            if not cands:
-                results_candidates[s1_id] = ""
-                results_matches[s1_id] = ""
-                singleton_count += 1
-                continue
+        batch_size = 2000
+        for b_start in range(0, len(s1_list), batch_size):
+            b_chunk = s1_list[b_start : b_start + batch_size]
+            batch_feats = []
+            entity_cand_meta = []
 
-            results_candidates[s1_id] = ",".join(cands)
+            for s1_rec in b_chunk:
+                s1_id = s1_rec["entity_id"]
+                cand_with_scores = idx.query_candidates_with_scores(s1_rec)
+                
+                if not cand_with_scores:
+                    results_candidates[s1_id] = ""
+                    results_matches[s1_id] = ""
+                    singleton_count += 1
+                    continue
 
-            cand_recs = [idx.targets[cid] for cid in cands if cid in idx.targets]
-            if not cand_recs:
-                results_matches[s1_id] = ""
-                singleton_count += 1
-                continue
+                cands = [cid for cid, _ in cand_with_scores]
+                results_candidates[s1_id] = ",".join(cands)
 
-            feats_matrix = np.array([
-                extract_pairwise_features(s1_rec, cr) for cr in cand_recs
-            ], dtype=np.float32)
+                cand_recs = [(idx.targets[cid], sc) for cid, sc in cand_with_scores if cid in idx.targets]
+                if not cand_recs:
+                    results_matches[s1_id] = ""
+                    singleton_count += 1
+                    continue
 
-            probs = matcher.predict_proba(feats_matrix)
-            cand_ids = [cr["entity_id"] for cr in cand_recs]
-            matched_ids = matcher.predict_entity_matches(
-                cand_ids, probs,
-                anchor_threshold=matcher.optimal_threshold,
-                expansion_threshold=max(0.40, matcher.optimal_threshold - 0.08)
-            )
+                start_off = len(batch_feats)
+                for cr, sc in cand_recs:
+                    batch_feats.append(extract_pairwise_features(s1_rec, cr, blocking_score=sc))
+                end_off = len(batch_feats)
+                cand_ids = [cr["entity_id"] for cr, _ in cand_recs]
+                entity_cand_meta.append((s1_id, cand_ids, start_off, end_off))
 
-            if matched_ids:
-                results_matches[s1_id] = ",".join(matched_ids)
-                matched_count += 1
-            else:
-                results_matches[s1_id] = ""
-                singleton_count += 1
+            if batch_feats:
+                feats_matrix = np.array(batch_feats, dtype=np.float32)
+                batch_probs = matcher.predict_proba(feats_matrix)
+                
+                for s1_id, cand_ids, s_off, e_off in entity_cand_meta:
+                    probs = batch_probs[s_off:e_off]
+                    matched_ids = matcher.predict_entity_matches(
+                        cand_ids, probs,
+                        anchor_threshold=matcher.optimal_threshold,
+                        expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
+                    )
+                    if matched_ids:
+                        results_matches[s1_id] = ",".join(matched_ids)
+                        matched_count += 1
+                    else:
+                        results_matches[s1_id] = ""
+                        singleton_count += 1
 
-            if (i + 1) % 50000 == 0 or (i + 1) == len(s1_list):
-                print(f"  Processed {i + 1}/{len(s1_list)} ({((i + 1)/len(s1_list))*100:.1f}%) | Matches: {matched_count} | Singletons: {singleton_count}")
+            processed = min(b_start + batch_size, len(s1_list))
+            if processed % 50000 == 0 or processed == len(s1_list):
+                print(f"  Processed {processed}/{len(s1_list)} ({((processed)/len(s1_list))*100:.1f}%) | Matches: {matched_count} | Singletons: {singleton_count}")
 
         print(f"Completed {country} in {time.time() - c_start:.1f}s.")
         # Free country index memory
