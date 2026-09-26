@@ -292,15 +292,16 @@ class CountryCandidateIndex:
     def finalize_index(self):
         total = len(self.targets)
         if total == 0: return
-        max_df = min(2000, max(300, int(total * 0.005)))
+        # Prune only true ubiquitous stopgrams (> 2% of targets or > 25,000) to protect real business vocabulary
+        max_df = max(15000, int(total * 0.02))
         pruned_grams = [g for g, count in self.gram_df.items() if count > max_df]
         for g in pruned_grams:
             del self.gram_index[g]
-        pruned_addr = [k for k, tids in self.addr_key_index.items() if len(tids) > 150]
+        pruned_addr = [k for k, tids in self.addr_key_index.items() if len(tids) > 250]
         for k in pruned_addr:
             del self.addr_key_index[k]
 
-    def query_candidates(self, s1_rec: Dict[str, Any], min_score: float = 3.0) -> List[str]:
+    def query_candidates(self, s1_rec: Dict[str, Any], min_score: float = 2.0) -> List[str]:
         scores: Dict[str, float] = collections.defaultdict(float)
         s1_stem = s1_rec.get("name_stem", "").strip().lower()
         if s1_stem:
@@ -329,7 +330,7 @@ class CountryCandidateIndex:
                     if postings:
                         for tid in postings:
                             gram_hits[tid] += 1
-                min_hits = max(2, int(num_s1_grams * 0.25)) if num_s1_grams > 3 else 1
+                min_hits = max(2, int(num_s1_grams * 0.20)) if num_s1_grams > 3 else 1
                 for tid, hits in gram_hits.items():
                     if hits < min_hits:
                         continue
@@ -337,8 +338,8 @@ class CountryCandidateIndex:
                     if target_rec:
                         t_grams_count = target_rec.get("num_grams", 1)
                         overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
-                        if overlap >= 0.28:
-                            scores[tid] += overlap * 7.0
+                        if overlap >= 0.25:
+                            scores[tid] += overlap * 10.0
         if not scores: return []
         filtered = [(tid, sc) for tid, sc in scores.items() if sc >= min_score]
         if not filtered: return []
@@ -546,7 +547,7 @@ def run():
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2 and parts[1].strip():
                 gt[parts[0]] = set(parts[1].split(","))
-                if len(gt) >= 2500: break
+                if len(gt) >= 20000: break
 
     target_s1 = set(gt.keys())
     target_matches = set()
@@ -567,7 +568,7 @@ def run():
                 }
 
     train_indices = {c: CountryCandidateIndex(c, max_candidates=15) for c in {r["country"] for r in s1_train.values()}}
-    distractor_cap = 40000
+    distractor_cap = 120000
     for path in [TRAIN_S2, TRAIN_S3]:
         with open(path, "r", encoding="utf-8") as f:
             r = csv.reader(f, delimiter="\t")
