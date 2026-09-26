@@ -24,6 +24,12 @@ Inspecting true positive pairs across `train_source1.tsv`, `train_source2.tsv`, 
   - $S_2$: `एसएस फूड प्राइवेट लिमिटेड` (Hindi script transliterated to `eses phood praaivet limited`)
 - **Implication:** Script transliteration converts Indic scripts into standard Latin characters before indexing, enabling cross-script candidate generation.
 
+
+
+
+
+
+
 ### Archetype D: Typographical & Legal Suffix Noise
 - **Example:**
   - $S_1$: `Payne Enterprises`, `3315 Fremont Street, Peoria, IL`
