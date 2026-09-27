@@ -70,37 +70,46 @@ def locate_dataset_dir(cli_root: Optional[str] = None) -> Path:
             print(f"[Dataset Detector] Using DATASET_ROOT env: {p}")
             return p
 
-    # 3. Google Colab paths
+    # 3. Kaggle input paths (Priority if running in Kaggle environment)
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        # First check known paths
+        known_kaggle = [
+            Path("/kaggle/input/datasets/naveenkumarme/test-data/dataset"),
+            Path("/kaggle/input/test_data/dataset"),
+            Path("/kaggle/input/test-data/dataset"),
+            Path("/kaggle/input/test_data"),
+            Path("/kaggle/input/dataset"),
+        ]
+        for p in known_kaggle:
+            if p.exists() and (
+                (p / "test" / "test_source1.tsv").exists() or
+                (p / "train" / "train_ground_truth.tsv").exists() or
+                (p / "test_source1.tsv").exists()
+            ):
+                print(f"[Dataset Detector] Found Kaggle dataset at: {p}")
+                return p
+
+        # Deep search across /kaggle/input
+        for root, dirs, files in os.walk(kaggle_input):
+            p_root = Path(root)
+            if "test_source1.tsv" in files or "train_ground_truth.tsv" in files:
+                target = p_root.parent if p_root.name in ["train", "test"] else p_root
+                print(f"[Dataset Detector] Found Kaggle dataset at: {target}")
+                return target
+
+    # 4. Google Colab paths (Only if not resolved via Kaggle)
     colab_candidates = [
-        Path("/content/business_entity_resolution/dataset"),
+        Path("/content/dataset_full"),
         Path("/content/dataset"),
+        Path("/content/business_entity_resolution/dataset"),
         Path("/content/data"),
     ]
     for p in colab_candidates:
         if p.exists():
-            print(f"[Dataset Detector] Found Google Colab dataset at: {p}")
-            return p
-
-    # 4. Kaggle input paths
-    known_kaggle = [
-        Path("/kaggle/input/test_data/dataset"),
-        Path("/kaggle/input/test-data/dataset"),
-        Path("/kaggle/input/test_data"),
-        Path("/kaggle/input/dataset"),
-    ]
-    for p in known_kaggle:
-        if p.exists():
-            print(f"[Dataset Detector] Found Kaggle dataset at: {p}")
-            return p
-
-    kaggle_input = Path("/kaggle/input")
-    if kaggle_input.exists():
-        for root, dirs, files in os.walk(kaggle_input):
-            p_root = Path(root)
-            if "train_ground_truth.tsv" in files or "test_source1.tsv" in files:
-                target = p_root.parent if p_root.name in ["train", "test"] else p_root
-                print(f"[Dataset Detector] Found Kaggle dataset at: {target}")
-                return target
+            if (p / "train" / "train_ground_truth.tsv").exists() or (p / "train_ground_truth.tsv").exists():
+                print(f"[Dataset Detector] Found Google Colab dataset at: {p}")
+                return p
 
     # 5. Local paths
     local_candidates = [
