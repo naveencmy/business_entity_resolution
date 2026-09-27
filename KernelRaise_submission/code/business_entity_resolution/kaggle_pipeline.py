@@ -893,8 +893,15 @@ def run(
     if blocking_total > 0:
         print(f"Honest Candidate Recall (Ceiling): {blocking_hits / blocking_total:.4f} ({blocking_hits}/{blocking_total})")
 
-    # In tiny toy datasets where all sampled candidates are positive or negative, add balanced reference
-    if len(y_train) > 0 and len(set(y_train)) < 2:
+    # In tiny toy datasets where all sampled candidates are positive or negative or empty, add balanced reference
+    if len(y_train) == 0:
+        X_train.append([0.0] * 17)
+        y_train.append(0)
+        pairs_train.append(("DUMMY_S1", "DUMMY_CAND_0"))
+        X_train.append([1.0] * 17)
+        y_train.append(1)
+        pairs_train.append(("DUMMY_S1", "DUMMY_CAND_1"))
+    elif len(set(y_train)) < 2:
         dummy_label = 0 if 1 in set(y_train) else 1
         X_train.append([0.0] * 17)
         y_train.append(dummy_label)
