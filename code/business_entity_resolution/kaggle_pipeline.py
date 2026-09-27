@@ -437,11 +437,11 @@ class CountryCandidateIndex:
     def finalize_index(self):
         total = len(self.targets)
         if total == 0: return
-        max_df = max(15000, int(total * 0.02))
+        max_df = min(2000, max(300, int(total * 0.005)))
         pruned_grams = [g for g, count in self.gram_df.items() if count > max_df]
         for g in pruned_grams:
             del self.gram_index[g]
-        pruned_addr = [k for k, tids in self.addr_key_index.items() if len(tids) > 250]
+        pruned_addr = [k for k, tids in self.addr_key_index.items() if len(tids) > 150]
         for k in pruned_addr:
             del self.addr_key_index[k]
 
@@ -472,22 +472,24 @@ class CountryCandidateIndex:
             s1_grams = extract_char_ngrams(s1_stem, n=3)
             num_s1_grams = len(s1_grams)
             if num_s1_grams > 0:
-                gram_hits: Dict[str, int] = collections.defaultdict(int)
-                for g in s1_grams:
-                    postings = self.gram_index.get(g)
-                    if postings:
-                        for tid in postings:
+                valid_grams = [g for g in s1_grams if g in self.gram_index]
+                if valid_grams:
+                    valid_grams.sort(key=lambda g: self.gram_df.get(g, 999999))
+                    top_grams = valid_grams[:8]
+                    gram_hits: Dict[str, int] = collections.defaultdict(int)
+                    for g in top_grams:
+                        for tid in self.gram_index[g]:
                             gram_hits[tid] += 1
-                min_hits = max(2, int(num_s1_grams * 0.25)) if num_s1_grams > 3 else 1
-                for tid, hits in gram_hits.items():
-                    if hits < min_hits:
-                        continue
-                    target_rec = self.targets.get(tid)
-                    if target_rec:
-                        t_grams_count = target_rec.get("num_grams", 1)
-                        overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
-                        if overlap >= 0.28:
-                            scores[tid] += overlap * 7.0
+                    min_hits = max(2, int(num_s1_grams * 0.20)) if num_s1_grams > 3 else 1
+                    for tid, hits in gram_hits.items():
+                        if hits < min_hits:
+                            continue
+                        target_rec = self.targets.get(tid)
+                        if target_rec:
+                            t_grams_count = target_rec.get("num_grams", 1)
+                            overlap = hits / (num_s1_grams + t_grams_count - hits + 1e-5)
+                            if overlap >= 0.25:
+                                scores[tid] += overlap * 7.0
         if not scores: return []
         filtered = [(tid, sc) for tid, sc in scores.items() if sc >= min_score]
         if not filtered: return []
@@ -1076,8 +1078,8 @@ def run(
                     results_matches[s1_id] = ",".join(m_ids) if m_ids else ""
 
             processed = min(b_start + batch_size, len(s1_list))
-            if processed % 50000 == 0 or processed == len(s1_list):
-                print(f"  [{country}] {processed}/{len(s1_list)} complete ({((processed)/len(s1_list))*100:.1f}%).")
+            if processed % 10000 == 0 or processed == len(s1_list):
+                print(f"  [{country}] {processed}/{len(s1_list)} complete ({((processed)/len(s1_list))*100:.1f}%).", flush=True)
         del idx
 
     # Step C: Write outputs
