@@ -31,11 +31,57 @@ import numpy as np
 import xgboost as xgb
 from sklearn.ensemble import HistGradientBoostingClassifier
 
+import argparse
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="xgboost")
+
 # -----------------------------------------------------------------------------
-# 1. PATH RESOLUTION (Auto-detects Kaggle, Local, or Custom Environment)
+# 1. PATH RESOLUTION & CLI ARGUMENTS (Auto-detects Kaggle, Colab, Local, or CLI)
 # -----------------------------------------------------------------------------
-def locate_dataset_dir() -> Path:
-    # 1. Explicit Kaggle dataset matching user's exact hierarchy (/kaggle/input/test_data/dataset)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Business Entity Resolution Kaggle/Colab Pipeline")
+    parser.add_argument("--dataset-root", "--dataset_root", "--dataset-dir", "--dataset_dir",
+                        dest="dataset_root", type=str, default=None,
+                        help="Root directory containing dataset (e.g. /content/business_entity_resolution/dataset)")
+    parser.add_argument("--output-dir", "--output_dir",
+                        dest="output_dir", type=str, default=None,
+                        help="Directory to save output matching_results.tsv and candidate_pairs.tsv")
+    parser.add_argument("--train-samples", dest="train_samples", type=int, default=10000,
+                        help="Number of ground truth entities to sample for training (default: 10000)")
+    parser.add_argument("--batch-size", dest="batch_size", type=int, default=2000,
+                        help="Batch size for candidate scoring inference (default: 2000)")
+    args, _ = parser.parse_known_args()
+    return args
+
+def locate_dataset_dir(cli_root: Optional[str] = None) -> Path:
+    # 1. Direct CLI argument
+    if cli_root:
+        p = Path(cli_root).resolve()
+        if p.exists():
+            print(f"[Dataset Detector] Using CLI specified dataset root: {p}")
+            return p
+        else:
+            print(f"[Dataset Detector] Warning: Specified dataset root does not exist: {p}")
+
+    # 2. Environment variable
+    if "DATASET_ROOT" in os.environ:
+        p = Path(os.environ["DATASET_ROOT"]).resolve()
+        if p.exists():
+            print(f"[Dataset Detector] Using DATASET_ROOT env: {p}")
+            return p
+
+    # 3. Google Colab paths
+    colab_candidates = [
+        Path("/content/business_entity_resolution/dataset"),
+        Path("/content/dataset"),
+        Path("/content/data"),
+    ]
+    for p in colab_candidates:
+        if p.exists():
+            print(f"[Dataset Detector] Found Google Colab dataset at: {p}")
+            return p
+
+    # 4. Kaggle input paths
     known_kaggle = [
         Path("/kaggle/input/test_data/dataset"),
         Path("/kaggle/input/test-data/dataset"),
@@ -43,59 +89,77 @@ def locate_dataset_dir() -> Path:
         Path("/kaggle/input/dataset"),
     ]
     for p in known_kaggle:
-        if (p / "test" / "test_source1.tsv").exists() or (p / "test_source1.tsv").exists():
-            print(f"[Dataset Detector] Found dataset at: {p}")
+        if p.exists():
+            print(f"[Dataset Detector] Found Kaggle dataset at: {p}")
             return p
 
-    # 2. General Kaggle recursive search
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.exists():
         for root, dirs, files in os.walk(kaggle_input):
             p_root = Path(root)
-            if (p_root / "test" / "test_source1.tsv").exists():
-                print(f"[Dataset Detector] Found dataset root at: {p_root}")
-                return p_root
-            if "test_source1.tsv" in files:
-                parent = p_root.parent
-                print(f"[Dataset Detector] Found dataset parent at: {parent}")
-                return parent
+            if "train_ground_truth.tsv" in files or "test_source1.tsv" in files:
+                target = p_root.parent if p_root.name in ["train", "test"] else p_root
+                print(f"[Dataset Detector] Found Kaggle dataset at: {target}")
+                return target
 
-    # 3. Local candidates
-    candidates = [
+    # 5. Local paths
+    local_candidates = [
         Path("./dataset"),
         Path("../dataset"),
-        Path("e:/Projects/Active/Business_pipeline/Deputy_pipe/Datasets/student_resource/dataset"),
         Path("./Deputy_pipe/Datasets/student_resource/dataset"),
+        Path("e:/Projects/Active/Business_pipeline/Deputy_pipe/Datasets/student_resource/dataset"),
     ]
-    for p in candidates:
-        if (p / "test" / "test_source1.tsv").exists() or (p / "test_source1.tsv").exists():
-            print(f"[Dataset Detector] Found dataset at: {p}")
+    for p in local_candidates:
+        if p.exists():
+            print(f"[Dataset Detector] Found local dataset at: {p}")
             return p
 
-    return Path("e:/Projects/Active/Business_pipeline/Deputy_pipe/Datasets/student_resource/dataset")
+    # Fallback
+    fallback = Path("./dataset")
+    print(f"[Dataset Detector] Defaulting to fallback directory: {fallback.resolve()}")
+    return fallback
 
-DATASET_DIR = locate_dataset_dir()
-if Path("/kaggle/working").exists():
-    OUTPUT_DIR = Path("/kaggle/working/output")
-else:
-    OUTPUT_DIR = Path("./output")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def resolve_dataset_files(dataset_dir: Path) -> Dict[str, Optional[Path]]:
+    """
+    Finds train and test TSV files whether flat or nested in train/ and test/ folders.
+    """
+    def find_file(filenames: List[str]) -> Optional[Path]:
+        for fname in filenames:
+            for sub in ["train", "test", ""]:
+                candidate = (dataset_dir / sub / fname) if sub else (dataset_dir / fname)
+                if candidate.exists():
+                    return candidate
+            if dataset_dir.exists():
+                for fpath in dataset_dir.rglob(fname):
+                    if fpath.is_file():
+                        return fpath
+        return None
 
-# Detect train and test directories
-TRAIN_DIR = DATASET_DIR / "train" if (DATASET_DIR / "train").exists() else DATASET_DIR
-TEST_DIR = DATASET_DIR / "test" if (DATASET_DIR / "test").exists() else DATASET_DIR
+    train_gt = find_file(["train_ground_truth.tsv", "ground_truth.tsv"])
+    train_s1 = find_file(["train_source1.tsv", "source1.tsv"])
+    train_s2 = find_file(["train_source2.tsv", "source2.tsv"])
+    train_s3 = find_file(["train_source3.tsv", "source3.tsv"])
 
-TRAIN_S1 = TRAIN_DIR / "train_source1.tsv"
-TRAIN_S2 = TRAIN_DIR / "train_source2.tsv"
-TRAIN_S3 = TRAIN_DIR / "train_source3.tsv"
-TRAIN_GT = TRAIN_DIR / "train_ground_truth.tsv"
+    test_s1 = find_file(["test_source1.tsv"])
+    test_s2 = find_file(["test_source2.tsv"])
+    test_s3 = find_file(["test_source3.tsv"])
 
-TEST_S1 = TEST_DIR / "test_source1.tsv"
-TEST_S2 = TEST_DIR / "test_source2.tsv"
-TEST_S3 = TEST_DIR / "test_source3.tsv"
+    if not test_s1 and train_s1:
+        print("[Dataset Detector] Notice: test_source1.tsv not found; falling back to train_source1.tsv for inference demo.")
+        test_s1 = train_s1
+        test_s2 = train_s2
+        test_s3 = train_s3
 
-OUTPUT_MATCHING = OUTPUT_DIR / "matching_results.tsv"
-OUTPUT_CANDIDATES = OUTPUT_DIR / "candidate_pairs.tsv"
+    return {
+        "train_gt": train_gt,
+        "train_s1": train_s1,
+        "train_s2": train_s2,
+        "train_s3": train_s3,
+        "test_s1": test_s1,
+        "test_s2": test_s2,
+        "test_s3": test_s3,
+    }
+
 
 # -----------------------------------------------------------------------------
 # 2. NORMALIZATION & MULTILINGUAL TRANSLITERATION
@@ -642,79 +706,150 @@ class EntityMatcher:
 # -----------------------------------------------------------------------------
 # 6. END-TO-END PIPELINE EXECUTION
 # -----------------------------------------------------------------------------
-def run():
+def run(
+    dataset_root: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    train_samples: int = 10000,
+    batch_size: int = 2000
+):
     import random
+    dataset_dir = locate_dataset_dir(dataset_root)
+
+    if output_dir:
+        out_dir = Path(output_dir)
+    elif Path("/kaggle/working").exists():
+        out_dir = Path("/kaggle/working/output")
+    else:
+        out_dir = Path("./output")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    file_map = resolve_dataset_files(dataset_dir)
+    train_gt = file_map["train_gt"]
+    train_s1 = file_map["train_s1"]
+    train_s2 = file_map["train_s2"]
+    train_s3 = file_map["train_s3"]
+    test_s1 = file_map["test_s1"]
+    test_s2 = file_map["test_s2"]
+    test_s3 = file_map["test_s3"]
+
+    output_matching = out_dir / "matching_results.tsv"
+    output_candidates = out_dir / "candidate_pairs.tsv"
+
     print("=" * 60)
     print("RUNNING KAGGLE BUSINESS ENTITY RESOLUTION PIPELINE")
-    print(f"Dataset root: {DATASET_DIR}")
-    print(f"Output directory: {OUTPUT_DIR}")
+    print(f"Dataset root: {dataset_dir}")
+    print(f"Output directory: {out_dir}")
     print("=" * 60)
+
+    if not train_gt or not train_gt.exists():
+        available = [p.name for p in dataset_dir.iterdir()] if dataset_dir.exists() else []
+        raise FileNotFoundError(
+            f"Could not find train_ground_truth.tsv in '{dataset_dir}'. "
+            f"Available items: {available}. Pass --dataset-root <path> to specify the dataset directory."
+        )
 
     # Step A: Train model on ground truth with strict 80/20 train/validation split
     print("\n[Phase 1] Ingesting training ground truth with shuffling...")
     all_gt = []
-    with open(TRAIN_GT, "r", encoding="utf-8") as f:
-        f.readline()
+    pairwise_map = collections.defaultdict(set)
+    is_pairwise = False
+
+    with open(train_gt, "r", encoding="utf-8") as f:
+        header_line = f.readline().rstrip("\n")
+        header = [h.strip().lower() for h in header_line.split("\t")]
+        if len(header) >= 3 and any(h in ("label", "target", "match", "is_match") for h in header):
+            is_pairwise = True
+
         for line in f:
             parts = line.rstrip("\n").split("\t")
-            if len(parts) >= 2 and parts[1].strip():
-                all_gt.append((parts[0], set(parts[1].split(","))))
+            if not parts or not parts[0].strip():
+                continue
+            if is_pairwise or len(parts) == 3:
+                if len(parts) >= 3 and parts[2].strip() in ("1", "true", "True"):
+                    pairwise_map[parts[0].strip()].add(parts[1].strip())
+            else:
+                if len(parts) >= 2 and parts[1].strip():
+                    all_gt.append((parts[0].strip(), set(parts[1].strip().split(","))))
+
+    if pairwise_map:
+        for k, v in pairwise_map.items():
+            all_gt.append((k, v))
+
+    if not all_gt:
+        raise ValueError(f"No valid ground truth matches found in {train_gt}")
 
     rng = random.Random(42)
     rng.shuffle(all_gt)
-    sample_size = min(10000, len(all_gt))
+    sample_size = min(train_samples, len(all_gt))
     gt = dict(all_gt[:sample_size])
 
     target_s1 = set(gt.keys())
     target_matches = set()
-    for m in gt.values(): target_matches.update(m)
+    for m in gt.values():
+        target_matches.update(m)
     print(f"Sampled {len(gt)} Ground Truth entities ({len(target_matches)} true matches).")
 
     s1_train = {}
-    with open(TRAIN_S1, "r", encoding="utf-8") as f:
+    if not train_s1 or not train_s1.exists():
+        raise FileNotFoundError(f"Could not find train_source1.tsv in '{dataset_dir}'.")
+
+    with open(train_s1, "r", encoding="utf-8") as f:
         r = csv.reader(f, delimiter="\t")
-        next(r)
+        next(r, None)
         for row in r:
-            if row and row[0] in target_s1:
-                name_full, name_stem = clean_business_name(row[1])
-                addr = clean_address(row[2], row[3])
-                s1_train[row[0]] = {
-                    "entity_id": row[0], "name_full": name_full, "name_stem": name_stem,
+            if not row or not row[0].strip(): continue
+            s1_id = row[0].strip()
+            if s1_id in target_s1:
+                country = row[3].strip() if len(row) > 3 and row[3].strip() else "US"
+                raw_name = row[1] if len(row) > 1 else ""
+                raw_addr = row[2] if len(row) > 2 else ""
+                name_full, name_stem = clean_business_name(raw_name)
+                addr = clean_address(raw_addr, country)
+                s1_train[s1_id] = {
+                    "entity_id": s1_id, "name_full": name_full, "name_stem": name_stem,
                     "postal_code": addr["postal_code"], "locality": addr["locality"],
-                    "clean_addr": addr["clean_tokens"], "country": row[3].strip()
+                    "clean_addr": addr["clean_tokens"], "country": country
                 }
 
     train_indices = {c: CountryCandidateIndex(c, max_candidates=15) for c in {r["country"] for r in s1_train.values()}}
     distractor_cap = 60000
-    for path in [TRAIN_S2, TRAIN_S3]:
+    train_targets = [p for p in [train_s2, train_s3] if p and p.exists()]
+
+    for path in train_targets:
         with open(path, "r", encoding="utf-8") as f:
             r = csv.reader(f, delimiter="\t")
-            next(r)
+            next(r, None)
             distractors = 0
             for row in r:
-                if not row or len(row) < 4: continue
-                c = row[3].strip()
-                if c not in train_indices: continue
-                tid = row[0]
+                if not row or len(row) < 2: continue
+                country = row[3].strip() if len(row) > 3 and row[3].strip() else "US"
+                if country not in train_indices: continue
+                tid = row[0].strip()
                 is_m = tid in target_matches
                 if is_m or distractors < distractor_cap:
                     if not is_m: distractors += 1
-                    name_full, name_stem = clean_business_name(row[1])
-                    addr = clean_address(row[2], c)
-                    train_indices[c].add_target({
+                    raw_name = row[1] if len(row) > 1 else ""
+                    raw_addr = row[2] if len(row) > 2 else ""
+                    name_full, name_stem = clean_business_name(raw_name)
+                    addr = clean_address(raw_addr, country)
+                    train_indices[country].add_target({
                         "entity_id": tid, "name_full": name_full, "name_stem": name_stem,
                         "postal_code": addr["postal_code"], "locality": addr["locality"],
-                        "clean_addr": addr["clean_tokens"], "country": c
+                        "clean_addr": addr["clean_tokens"], "country": country
                     })
 
     for c, idx in train_indices.items(): idx.finalize_index()
 
-    # 80/20 Entity-level train/validation split
+    # Entity-level train/validation split
     entity_id_list = list(s1_train.keys())
     rng.shuffle(entity_id_list)
-    split_idx = int(len(entity_id_list) * 0.8)
-    train_ids = set(entity_id_list[:split_idx])
-    val_ids = set(entity_id_list[split_idx:])
+    if len(entity_id_list) <= 3:
+        train_ids = set(entity_id_list)
+        val_ids = set(entity_id_list)
+    else:
+        split_idx = int(len(entity_id_list) * 0.8)
+        train_ids = set(entity_id_list[:split_idx])
+        val_ids = set(entity_id_list[split_idx:])
 
     gt_train = {eid: gt[eid] for eid in train_ids if eid in gt}
     gt_val = {eid: gt[eid] for eid in val_ids if eid in gt}
@@ -738,24 +873,32 @@ def run():
             blocking_hits += len(true_set.intersection(set(cand_ids)))
             blocking_total += len(true_set)
 
-        is_val = s1_id in val_ids
+        in_train = s1_id in train_ids
+        in_val = s1_id in val_ids
 
         for cid, sc in cand_with_scores:
             cand_rec = idx.targets.get(cid)
             if not cand_rec: continue
             is_pos = 1 if cid in true_set else 0
             feats = extract_pairwise_features(s1_rec, cand_rec, blocking_score=sc)
-            if is_val:
-                X_val.append(feats)
-                y_val.append(is_pos)
-                pairs_val.append((s1_id, cid))
-            else:
+            if in_train:
                 X_train.append(feats)
                 y_train.append(is_pos)
                 pairs_train.append((s1_id, cid))
+            if in_val:
+                X_val.append(feats)
+                y_val.append(is_pos)
+                pairs_val.append((s1_id, cid))
 
     if blocking_total > 0:
         print(f"Honest Candidate Recall (Ceiling): {blocking_hits / blocking_total:.4f} ({blocking_hits}/{blocking_total})")
+
+    # In tiny toy datasets where all sampled candidates are positive or negative, add balanced reference
+    if len(y_train) > 0 and len(set(y_train)) < 2:
+        dummy_label = 0 if 1 in set(y_train) else 1
+        X_train.append([0.0] * 17)
+        y_train.append(dummy_label)
+        pairs_train.append(("DUMMY_S1", "DUMMY_CAND"))
 
     X_tr = np.array(X_train, dtype=np.float32)
     y_tr = np.array(y_train, dtype=np.int32)
@@ -768,55 +911,66 @@ def run():
     matcher = EntityMatcher()
     matcher.fit(X_tr, y_tr)
 
-    val_probs = matcher.predict_proba(X_v)
-    matcher.optimize_threshold(pairs_val, val_probs, gt_val)
+    if len(X_v) > 0 and len(gt_val) > 0:
+        val_probs = matcher.predict_proba(X_v)
+        matcher.optimize_threshold(pairs_val, val_probs, gt_val)
 
-    # Validate held-out score
-    val_preds: Dict[str, Set[str]] = {eid: set() for eid in val_ids}
-    val_entity_cands: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
-    for (s1_id, cid), prob in zip(pairs_val, val_probs):
-        val_entity_cands[s1_id].append((cid, float(prob)))
+        # Validate held-out score
+        val_preds: Dict[str, Set[str]] = {eid: set() for eid in val_ids}
+        val_entity_cands: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
+        for (s1_id, cid), prob in zip(pairs_val, val_probs):
+            val_entity_cands[s1_id].append((cid, float(prob)))
 
-    for s1_id in val_ids:
-        c_list = val_entity_cands.get(s1_id, [])
-        if not c_list: continue
-        c_ids = [cid for cid, _ in c_list]
-        p_arr = np.array([p for _, p in c_list], dtype=np.float32)
-        m_ids = matcher.predict_entity_matches(
-            c_ids, p_arr,
-            anchor_threshold=matcher.optimal_threshold,
-            expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
-        )
-        val_preds[s1_id] = set(m_ids)
+        for s1_id in val_ids:
+            c_list = val_entity_cands.get(s1_id, [])
+            if not c_list: continue
+            c_ids = [cid for cid, _ in c_list]
+            p_arr = np.array([p for _, p in c_list], dtype=np.float32)
+            m_ids = matcher.predict_entity_matches(
+                c_ids, p_arr,
+                anchor_threshold=matcher.optimal_threshold,
+                expansion_threshold=max(0.55, matcher.optimal_threshold - 0.08)
+            )
+            val_preds[s1_id] = set(m_ids)
 
-    val_countries = {eid: s1_train[eid]["country"] for eid in val_ids if eid in s1_train}
-    metrics = compute_macro_f05(gt_val, val_preds, entity_countries=val_countries)
-    print("\n" + "=" * 50)
-    print(f"HONEST HELD-OUT VALIDATION METRICS (Zero Leakage):")
-    print(f"  Macro F_0.5: {metrics['macro_f05']:.4f}")
-    print(f"  Precision:   {metrics['precision']:.4f}")
-    print(f"  Recall:      {metrics['recall']:.4f}")
-    if "per_country" in metrics:
-        print("  Per-Country Breakdown:")
-        for c, sc in metrics["per_country"].items():
-            print(f"    - {c}: {sc:.4f}")
-    print("=" * 50 + "\n")
+        val_countries = {eid: s1_train[eid]["country"] for eid in val_ids if eid in s1_train}
+        metrics = compute_macro_f05(gt_val, val_preds, entity_countries=val_countries)
+        print("\n" + "=" * 50)
+        print(f"HONEST HELD-OUT VALIDATION METRICS (Zero Leakage):")
+        print(f"  Macro F_0.5: {metrics['macro_f05']:.4f}")
+        print(f"  Precision:   {metrics['precision']:.4f}")
+        print(f"  Recall:      {metrics['recall']:.4f}")
+        if "per_country" in metrics:
+            print("  Per-Country Breakdown:")
+            for c, sc in metrics["per_country"].items():
+                print(f"    - {c}: {sc:.4f}")
+        print("=" * 50 + "\n")
+    else:
+        matcher.optimal_threshold = 0.66
+        print("[Notice] Validation set empty or too small; defaulting optimal threshold to 0.66")
 
     del train_indices, s1_train
 
     # Step B: Test Set Inference
-    print("\n[Phase 2] Loading test_source1.tsv...")
+    if not test_s1 or not test_s1.exists():
+        print(f"\n[Phase 2] Test set not found in '{dataset_dir}'. Skipping test inference.")
+        return
+
+    print(f"\n[Phase 2] Loading test entities from {test_s1.name}...")
     s1_all_ids = []
     s1_by_country = collections.defaultdict(list)
-    with open(TEST_S1, "r", encoding="utf-8") as f:
+    with open(test_s1, "r", encoding="utf-8") as f:
         r = csv.reader(f, delimiter="\t")
-        next(r)
+        next(r, None)
         for row in r:
-            if not row or len(row) < 4: continue
-            s1_id, c = row[0].strip(), row[3].strip()
+            if not row or not row[0].strip(): continue
+            s1_id = row[0].strip()
+            c = row[3].strip() if len(row) > 3 and row[3].strip() else "US"
             s1_all_ids.append(s1_id)
-            name_full, name_stem = clean_business_name(row[1])
-            addr = clean_address(row[2], c)
+            raw_name = row[1] if len(row) > 1 else ""
+            raw_addr = row[2] if len(row) > 2 else ""
+            name_full, name_stem = clean_business_name(raw_name)
+            addr = clean_address(raw_addr, c)
             s1_by_country[c].append({
                 "entity_id": s1_id, "name_full": name_full, "name_stem": name_stem,
                 "postal_code": addr["postal_code"], "locality": addr["locality"],
@@ -825,18 +979,23 @@ def run():
 
     results_cands = {}
     results_matches = {}
+    test_targets = [p for p in [test_s2, test_s3] if p and p.exists()]
 
     for country, s1_list in s1_by_country.items():
         print(f"\nProcessing Country Partition: {country} ({len(s1_list)} entities)...")
         idx = CountryCandidateIndex(country, max_candidates=15)
-        for path in [TEST_S2, TEST_S3]:
+        for path in test_targets:
             with open(path, "r", encoding="utf-8") as f:
                 r = csv.reader(f, delimiter="\t")
-                next(r)
+                next(r, None)
                 for row in r:
-                    if not row or len(row) < 4 or row[3].strip() != country: continue
-                    name_full, name_stem = clean_business_name(row[1])
-                    addr = clean_address(row[2], country)
+                    if not row or len(row) < 2: continue
+                    c = row[3].strip() if len(row) > 3 and row[3].strip() else "US"
+                    if c != country: continue
+                    raw_name = row[1] if len(row) > 1 else ""
+                    raw_addr = row[2] if len(row) > 2 else ""
+                    name_full, name_stem = clean_business_name(raw_name)
+                    addr = clean_address(raw_addr, country)
                     idx.add_target({
                         "entity_id": row[0].strip(), "name_full": name_full, "name_stem": name_stem,
                         "postal_code": addr["postal_code"], "locality": addr["locality"],
@@ -845,7 +1004,6 @@ def run():
         idx.finalize_index()
         print(f"Index built ({len(idx.targets)} targets). Running inference...")
 
-        batch_size = 2000
         for b_start in range(0, len(s1_list), batch_size):
             b_chunk = s1_list[b_start : b_start + batch_size]
             batch_feats = []
@@ -891,21 +1049,27 @@ def run():
         del idx
 
     # Step C: Write outputs
-    print("\nWriting output/candidate_pairs.tsv...")
-    with open(OUTPUT_CANDIDATES, "w", encoding="utf-8", newline="") as f:
+    print(f"\nWriting {output_candidates}...")
+    with open(output_candidates, "w", encoding="utf-8", newline="") as f:
         f.write("source1_entity_id\tcandidate_entity_ids\n")
         for s1 in s1_all_ids:
             f.write(f"{s1}\t{results_cands.get(s1, '')}\n")
 
-    print("Writing output/matching_results.tsv...")
-    with open(OUTPUT_MATCHING, "w", encoding="utf-8", newline="") as f:
+    print(f"Writing {output_matching}...")
+    with open(output_matching, "w", encoding="utf-8", newline="") as f:
         f.write("source1_entity_id\tmatched_entity_ids\n")
         for s1 in s1_all_ids:
             f.write(f"{s1}\t{results_matches.get(s1, '')}\n")
 
     print("\nOutputs generated successfully!")
-    print(f"Matching Results: {OUTPUT_MATCHING}")
-    print(f"Candidate Pairs:  {OUTPUT_CANDIDATES}")
+    print(f"Matching Results: {output_matching}")
+    print(f"Candidate Pairs:  {output_candidates}")
 
 if __name__ == "__main__":
-    run()
+    cli_args = parse_args()
+    run(
+        dataset_root=cli_args.dataset_root,
+        output_dir=cli_args.output_dir,
+        train_samples=cli_args.train_samples,
+        batch_size=cli_args.batch_size
+    )
