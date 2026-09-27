@@ -90,13 +90,29 @@ def locate_dataset_dir(cli_root: Optional[str] = None) -> Path:
                 print(f"[Dataset Detector] Found Kaggle dataset at: {p}")
                 return p
 
-        # Deep search across /kaggle/input
+        # Deep search across /kaggle/input (case-insensitive)
         for root, dirs, files in os.walk(kaggle_input):
             p_root = Path(root)
-            if "test_source1.tsv" in files or "train_ground_truth.tsv" in files:
-                target = p_root.parent if p_root.name in ["train", "test"] else p_root
+            files_lower = {f.lower() for f in files}
+            if "test_source1.tsv" in files_lower or "train_ground_truth.tsv" in files_lower:
+                target = p_root.parent if p_root.name.lower() in ["train", "test"] else p_root
                 print(f"[Dataset Detector] Found Kaggle dataset at: {target}")
                 return target
+
+        # If standard names not found, search for any TSV files in attached inputs
+        attached = list(kaggle_input.glob("*"))
+        if attached:
+            print(f"[Dataset Detector] Mounted directories in /kaggle/input: {[p.name for p in attached]}")
+            for item in attached:
+                if item.is_dir():
+                    tsvs = list(item.glob("**/*.tsv"))
+                    if tsvs:
+                        parent = tsvs[0].parent
+                        target = parent.parent if parent.name.lower() in ["train", "test"] else parent
+                        print(f"[Dataset Detector] Auto-detected dataset containing TSV files at: {target}")
+                        return target
+        else:
+            print("[Dataset Detector] Warning: /kaggle/input is empty! Please click '+ Add Input' on the right panel to attach your dataset.")
 
     # 4. Google Colab paths (Only if not resolved via Kaggle)
     colab_candidates = [
